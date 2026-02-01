@@ -1,0 +1,8 @@
+sequenceDiagram
+  Agent->>ClaudeAPI: prompt
+  ClaudeAPI-->>Agent: stream chunk
+  Agent->>Tokenizer: count tokens
+  Tokenizer-->>Agent: token delta
+  Agent->>Bus: agent.tokens.updated
+  Bus-->>TUI: update display
+  Agent->>Disk: persist usage
