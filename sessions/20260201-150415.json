@@ -1,0 +1,16 @@
+{
+  "id": "20260201-150415",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "No, I'm not using glm-4.7.",
+  "start_time": "2026-02-01T15:04:15.938659+01:00",
+  "end_time": "2026-02-01T15:04:17.776615+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 10224,
+    "output_tokens": 88,
+    "cache_read": 10179,
+    "total_tokens": 20491,
+    "cost_usd": 0.0073459
+  }
+}
