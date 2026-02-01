@@ -8,7 +8,7 @@ Goals:
 
 Requirements:
 - Define TokenUsage model
-- Integrate Claude tokenizer
+- Integrate LLM tokenizer
 - Emit token update events incrementally
 - Display tokens and cost in the TUI
 - Persist token usage per session

@@ -15,7 +15,7 @@ Requirements:
 Constraints:
 - Templates must be framework-agnostic
 - Validation errors must be explicit
-- No hardcoded Claude assumptions outside adapter
+- No hardcoded LLM-specific assumptions outside adapter
 
 Exit Criteria:
 - Agents can be spawned from YAML

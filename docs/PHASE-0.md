@@ -4,13 +4,13 @@ Your task is to implement PHASE 0 of an agent runtime.
 
 Goals:
 - Implement a framework-agnostic agent runtime
-- Support one Claude agent with streaming output
+- Support one AI agent with streaming output
 - Use an event-driven architecture
 - Ensure the TUI never calls agent logic directly
 
 Requirements:
 - Define a clean Agent interface
-- Implement a Claude adapter with streaming support
+- Implement an LLM adapter with streaming support
 - Implement an event bus
 - Implement an agent manager
 - Implement context-based cancel/pause
@@ -24,7 +24,7 @@ Constraints:
 - Write idiomatic Go
 
 Exit Criteria:
-- A Claude agent streams output live in the TUI
+- An AI agent streams output live in the TUI
 - Agent can be cancelled or paused
 - A session file is written to disk
 
