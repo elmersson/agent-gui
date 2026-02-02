@@ -1,0 +1,15 @@
+{
+  "id": "20260202-103646",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "",
+  "start_time": "2026-02-02T10:36:46.928225+01:00",
+  "end_time": "2026-02-02T10:36:47.358803+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": 0
+  }
+}
