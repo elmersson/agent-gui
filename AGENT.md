@@ -9,7 +9,7 @@ It is authoritative. If something is unclear elsewhere, follow this document.
 
 Build a **terminal-based, framework-agnostic agent runtime** with:
 
-- Streaming LLM agents (Claude first)
+- Streaming LLM agents (OpenCode first)
 - Event-driven architecture
 - Deterministic persistence
 - Multi-agent orchestration
@@ -33,7 +33,7 @@ You MUST follow these rules at all times:
 4. **Persistence before optimization**
    - If it happened, it must be replayable
 5. **Framework-agnostic core**
-   - Claude-specific logic stays in adapters
+   - LLM-specific logic stays in adapters
 6. **One phase at a time**
    - Do NOT implement future phases early
 
@@ -51,7 +51,7 @@ Agent Manager
 ↓
 Agent (via Adapter)
 ↓
-Framework (Claude, etc.)
+Framework (OpenCode, etc.)
 
 
 All communication flows through the **event bus**.
@@ -92,7 +92,7 @@ Establish a stable, event-driven agent runtime with one Claude agent.
 
 **You must implement**
 - Agent interface
-- Claude adapter with streaming
+- OpenCode adapter with streaming
 - Event bus
 - Agent manager
 - Context-based cancel/pause
@@ -100,7 +100,7 @@ Establish a stable, event-driven agent runtime with one Claude agent.
 - TUI with command palette (`:` mode)
 
 **Exit Criteria**
-- Claude agent streams output live
+- OpenCode agent streams output live
 - Agent can be cancelled
 - Session written to disk
 - UI updates only via events

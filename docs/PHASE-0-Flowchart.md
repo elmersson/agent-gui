@@ -3,5 +3,5 @@ flowchart LR
   Manager -->|Run| Agent
   Agent -->|events| Bus
   Bus -->|subscribe| TUI
-  Agent -->|stream| ClaudeAPI
+  Agent -->|stream| LLM_API
   Manager --> Disk[(Session JSON)]

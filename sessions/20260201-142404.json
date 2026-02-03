@@ -1,0 +1,9 @@
+{
+  "id": "20260201-142404",
+  "agent_name": "claude",
+  "input": "",
+  "output": "Hello! You said: hello world. \n\nThis is a mock response streaming word by word... ",
+  "start_time": "2026-02-01T14:24:04.366932+01:00",
+  "end_time": "2026-02-01T14:24:05.672073+01:00",
+  "events": []
+}
