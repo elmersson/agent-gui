@@ -1,0 +1,16 @@
+{
+  "id": "20260201-150356",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "No, this is `opencode` - a terminal-based agent runtime written in Go, not GLM-4.7.",
+  "start_time": "2026-02-01T15:03:56.026652+01:00",
+  "end_time": "2026-02-01T15:04:03.243304+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 10901,
+    "output_tokens": 157,
+    "cache_read": 10880,
+    "total_tokens": 21938,
+    "cost_usd": 0.007974
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "id": "20260201-145018",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "Hello! I'm OpenCode, here to help you with software engineering tasks.\n\nI can see you're working on the `agent-gui` project, which appears to be a Go-based TUI (Terminal User Interface) application with an agent architecture.\n\nHow can I help you today?",
+  "start_time": "2026-02-01T14:50:18.160975+01:00",
+  "end_time": "2026-02-01T14:50:22.055773+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 55,
+    "total_tokens": 57,
+    "cost_usd": 0.000831
+  }
+}

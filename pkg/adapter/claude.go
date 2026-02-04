@@ -8,10 +8,14 @@ import (
 	"os/exec"
 
 	"github.com/rasmuselmersson/opencode/pkg/agent"
+	"github.com/rasmuselmersson/opencode/pkg/tokenizer"
 )
 
 type OpenCodeAdapter struct {
-	model string
+	model     string
+	tokenizer *tokenizer.Tokenizer
+	// TokenUsageChan emits token usage updates during streaming
+	TokenUsageChan chan agent.TokenUsage
 }
 
 type OpenCodeEvent struct {
@@ -26,8 +30,27 @@ type TextPart struct {
 	Text string `json:"text"`
 }
 
+type StepFinishPart struct {
+	Type   string  `json:"type"`
+	Reason string  `json:"reason"`
+	Cost   float64 `json:"cost"`
+	Tokens struct {
+		Input     int `json:"input"`
+		Output    int `json:"output"`
+		Reasoning int `json:"reasoning"`
+		Cache     struct {
+			Read  int `json:"read"`
+			Write int `json:"write"`
+		} `json:"cache"`
+	} `json:"tokens"`
+}
+
 func NewClaudeAdapter(config agent.Config) *OpenCodeAdapter {
-	return &OpenCodeAdapter{model: config.Model}
+	return &OpenCodeAdapter{
+		model:          config.Model,
+		tokenizer:      tokenizer.NewTokenizer(),
+		TokenUsageChan: make(chan agent.TokenUsage, 100),
+	}
 }
 
 func (a *OpenCodeAdapter) Name() string {
@@ -37,14 +60,17 @@ func (a *OpenCodeAdapter) Name() string {
 func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan string, <-chan error) {
 	outputCh := make(chan string, 100)
 	errCh := make(chan error, 1)
+	// Create a new token channel for this execution
+	a.TokenUsageChan = make(chan agent.TokenUsage, 100)
 
 	go func() {
 		defer close(outputCh)
 		defer close(errCh)
+		defer close(a.TokenUsageChan)
 
 		args := []string{"run", "--format", "json"}
 		if a.model != "" {
-			args = append(args, "-m", a.model)
+			args = append(args, "--model", a.model)
 		}
 		args = append(args, input)
 
@@ -55,10 +81,35 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 			return
 		}
 
+		stderr, err := cmd.StderrPipe()
+		if err != nil {
+			errCh <- fmt.Errorf("failed to get stderr: %w", err)
+			return
+		}
+
 		if err := cmd.Start(); err != nil {
 			errCh <- fmt.Errorf("failed to start opencode: %w", err)
 			return
 		}
+
+		// Read stderr in background for error reporting
+		go func() {
+			stderrScanner := bufio.NewScanner(stderr)
+			var stderrOutput string
+			for stderrScanner.Scan() {
+				stderrOutput += stderrScanner.Text() + "\n"
+			}
+			if stderrOutput != "" {
+				select {
+				case errCh <- fmt.Errorf("opencode stderr: %s", stderrOutput):
+				default:
+				}
+			}
+		}()
+
+		// Track token usage - use estimates during streaming, real values at step_finish
+		var usage agent.TokenUsage
+		var estimatedOutputTokens int
 
 		scanner := bufio.NewScanner(stdout)
 		for scanner.Scan() {
@@ -69,16 +120,51 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 				continue
 			}
 
-			if event.Type == "text" {
+			switch event.Type {
+			case "text":
 				var part TextPart
 				if err := json.Unmarshal(event.Part, &part); err != nil {
 					continue
 				}
+
+				// Estimate tokens during streaming for live updates
+				chunkTokens := a.tokenizer.CountTokens(part.Text)
+				estimatedOutputTokens += chunkTokens
+				usage.OutputTokens = estimatedOutputTokens
+				usage.TotalTokens = usage.InputTokens + usage.OutputTokens
+
+				// Emit estimated token usage update (non-blocking)
+				select {
+				case a.TokenUsageChan <- usage:
+				default:
+				}
+
 				select {
 				case outputCh <- part.Text:
 				case <-ctx.Done():
 					cmd.Process.Kill()
 					return
+				}
+
+			case "step_finish":
+				// Parse real token counts and cost from API response
+				var part StepFinishPart
+				if err := json.Unmarshal(event.Part, &part); err != nil {
+					continue
+				}
+
+				// Update with real values from the API
+				usage.InputTokens = part.Tokens.Input
+				usage.OutputTokens = part.Tokens.Output
+				usage.CacheRead = part.Tokens.Cache.Read
+				usage.CacheWrite = part.Tokens.Cache.Write
+				usage.TotalTokens = usage.InputTokens + usage.OutputTokens + usage.CacheRead
+				usage.CostUSD = part.Cost
+
+				// Emit final accurate token usage
+				select {
+				case a.TokenUsageChan <- usage:
+				default:
 				}
 			}
 		}
@@ -92,4 +178,19 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 	}()
 
 	return outputCh, errCh
+}
+
+// GetTokenUsageChan returns a channel that emits token usage updates during streaming
+func (a *OpenCodeAdapter) GetTokenUsageChan() <-chan agent.TokenUsage {
+	return a.TokenUsageChan
+}
+
+// SetModel changes the model used by the adapter
+func (a *OpenCodeAdapter) SetModel(model string) {
+	a.model = model
+}
+
+// GetModel returns the current model
+func (a *OpenCodeAdapter) GetModel() string {
+	return a.model
 }

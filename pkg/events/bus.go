@@ -8,13 +8,14 @@ import (
 type EventType string
 
 const (
-	EventAgentStarted EventType = "agent.started"
-	EventAgentStopped EventType = "agent.stopped"
-	EventAgentPaused  EventType = "agent.paused"
-	EventAgentResumed EventType = "agent.resumed"
-	EventOutputChunk  EventType = "output.chunk"
-	EventError        EventType = "error"
-	EventSessionSaved EventType = "session.saved"
+	EventAgentStarted  EventType = "agent.started"
+	EventAgentStopped  EventType = "agent.stopped"
+	EventAgentPaused   EventType = "agent.paused"
+	EventAgentResumed  EventType = "agent.resumed"
+	EventOutputChunk   EventType = "output.chunk"
+	EventError         EventType = "error"
+	EventSessionSaved  EventType = "session.saved"
+	EventTokensUpdated EventType = "agent.tokens.updated"
 )
 
 type Event struct {

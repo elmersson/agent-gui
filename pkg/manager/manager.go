@@ -62,6 +62,12 @@ func (m *Manager) Start(input string) error {
 func (m *Manager) run(input string) {
 	outputCh, errCh := m.agent.Execute(m.ctx, input)
 
+	// Check if agent supports token tracking
+	var tokenCh <-chan agent.TokenUsage
+	if trackingAgent, ok := m.agent.(agent.TokenTrackingAgent); ok {
+		tokenCh = trackingAgent.GetTokenUsageChan()
+	}
+
 	for {
 		m.stateMutex.RLock()
 		paused := m.paused
@@ -102,6 +108,15 @@ func (m *Manager) run(input string) {
 				AgentName: m.agent.Name(),
 				Data:      chunk,
 			})
+
+		case usage, ok := <-tokenCh:
+			if ok {
+				m.bus.Publish(events.Event{
+					Type:      events.EventTokensUpdated,
+					AgentName: m.agent.Name(),
+					Data:      usage,
+				})
+			}
 
 		case err, ok := <-errCh:
 			if ok && err != nil {
@@ -167,4 +182,11 @@ func (m *Manager) GetState() State {
 	m.stateMutex.RLock()
 	defer m.stateMutex.RUnlock()
 	return m.state
+}
+
+// SetModel sets the model on the underlying agent if it supports it
+func (m *Manager) SetModel(model string) {
+	if setter, ok := m.agent.(interface{ SetModel(string) }); ok {
+		setter.SetModel(model)
+	}
 }

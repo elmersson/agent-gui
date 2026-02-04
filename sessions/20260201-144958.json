@@ -1,0 +1,15 @@
+{
+  "id": "20260201-144958",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "Hello! I'm OpenCode, your AI coding assistant. How can I help you with your project today?\n\nI can see you're working in a Go-based project that appears to be building some kind of agent GUI application. I can help you with tasks like:\n\n- Writing or modifying code\n- Debugging issues\n- Explaining code\n- Running tests or builds\n- Refactoring\n- Adding new features\n\nWhat would you like to work on?",
+  "start_time": "2026-02-01T14:49:58.354297+01:00",
+  "end_time": "2026-02-01T14:50:02.329079+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 0,
+    "output_tokens": 0,
+    "total_tokens": 0,
+    "cost_usd": 0
+  }
+}

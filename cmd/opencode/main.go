@@ -14,8 +14,9 @@ import (
 func main() {
 	bus := events.NewEventBus()
 
+	// Don't override the model - let opencode use its configured default
 	openCodeAdapter := adapter.NewClaudeAdapter(agent.Config{
-		Model: "", // Use default model
+		Model: "", // Use opencode's configured model
 	})
 
 	agentManager := manager.NewManager(openCodeAdapter, bus)
@@ -25,7 +26,7 @@ func main() {
 		panic(err)
 	}
 
-	model := tui.NewModel(agentManager, sessionManager, bus)
+	model := tui.NewModel(agentManager, sessionManager, bus, "auto")
 
 	p := tea.NewProgram(
 		model,
@@ -37,6 +38,8 @@ func main() {
 	stoppedCh := bus.Subscribe(events.EventAgentStopped)
 	pausedCh := bus.Subscribe(events.EventAgentPaused)
 	resumedCh := bus.Subscribe(events.EventAgentResumed)
+	tokensCh := bus.Subscribe(events.EventTokensUpdated)
+	errorCh := bus.Subscribe(events.EventError)
 
 	go func() {
 		for event := range outputCh {
@@ -70,6 +73,23 @@ func main() {
 	go func() {
 		for range resumedCh {
 			p.Send(tui.StateMsg("running"))
+		}
+	}()
+
+	go func() {
+		for event := range tokensCh {
+			if usage, ok := event.Data.(agent.TokenUsage); ok {
+				sessionManager.UpdateTokenUsage(usage)
+				p.Send(tui.TokenUsageMsg(usage))
+			}
+		}
+	}()
+
+	go func() {
+		for event := range errorCh {
+			if errMsg, ok := event.Data.(string); ok {
+				p.Send(tui.OutputMsg("\n[ERROR] " + errMsg + "\n"))
+			}
 		}
 	}()
 

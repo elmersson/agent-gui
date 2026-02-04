@@ -107,21 +107,25 @@ Establish a stable, event-driven agent runtime with one Claude agent.
 
 ---
 
-### PHASE 1 — Token & Cost Accounting
+### PHASE 1 — Token & Cost Accounting ✅ COMPLETED
 
 **Goal**
 Track token usage and cost per agent/session.
 
-**You must implement**
-- TokenUsage model
-- Input/output token counting
-- Cost estimation
-- Token update events
-- Persistence of token usage
+**Implemented**
+- `TokenUsage` model in `pkg/agent/agent.go` with InputTokens, OutputTokens, TotalTokens, CostUSD
+- `ModelPricing` struct and `GetModelPricing()` for per-model cost calculation (Claude, GPT models)
+- `TokenTrackingAgent` interface for agents that support token tracking
+- `pkg/tokenizer/tokenizer.go` - heuristic token counter (word + char + punct estimation)
+- `EventTokensUpdated` event type in `pkg/events/bus.go`
+- OpenCode adapter tracks and emits token usage via `TokenUsageChan`
+- Session persistence includes `TokenUsage` field
+- TUI displays live token count and cost in header
+- Manager detects `TokenTrackingAgent` and publishes token update events
 
-**Exit Criteria**
-- Token usage visible live
-- Cost persisted and replayable
+**Exit Criteria** ✅
+- Token usage visible live in TUI header
+- Cost persisted in session JSON and replayable
 
 ---
 

@@ -1,0 +1,17 @@
+{
+  "id": "20260201-145645",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "I appreciate you reaching out, but I'm designed to help with software engineering tasks like writing code, debugging, reviewing code, explaining codebases, and other programming-related activities.\n\nI don't have the ability to fetch weather information, as that's outside my scope of software development assistance.\n\nIs there anything related to your codebase or a programming task I can help you with instead?",
+  "start_time": "2026-02-01T14:56:45.245835+01:00",
+  "end_time": "2026-02-01T14:56:49.053039+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 84,
+    "cache_read": 10674,
+    "cache_write": 328,
+    "total_tokens": 10760,
+    "cost_usd": 0.0056982
+  }
+}
