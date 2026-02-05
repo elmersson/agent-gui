@@ -6,6 +6,7 @@ import (
 
 	"github.com/rasmuselmersson/opencode/pkg/agent"
 	"github.com/rasmuselmersson/opencode/pkg/events"
+	"github.com/rasmuselmersson/opencode/pkg/template"
 )
 
 type State string
@@ -17,22 +18,24 @@ const (
 )
 
 type Manager struct {
-	agent      agent.Agent
-	bus        events.Bus
-	state      State
-	stateMutex sync.RWMutex
-	ctx        context.Context
-	cancel     context.CancelFunc
-	paused     bool
-	pauseCond  *sync.Cond
+	agent          agent.Agent
+	bus            events.Bus
+	state          State
+	stateMutex     sync.RWMutex
+	ctx            context.Context
+	cancel         context.CancelFunc
+	paused         bool
+	pauseCond      *sync.Cond
+	templateLoader *template.Loader
 }
 
 func NewManager(agent agent.Agent, bus events.Bus) *Manager {
 	return &Manager{
-		agent:     agent,
-		bus:       bus,
-		state:     StateIdle,
-		pauseCond: sync.NewCond(&sync.Mutex{}),
+		agent:          agent,
+		bus:            bus,
+		state:          StateIdle,
+		pauseCond:      sync.NewCond(&sync.Mutex{}),
+		templateLoader: template.NewLoader("templates"),
 	}
 }
 
@@ -189,4 +192,36 @@ func (m *Manager) SetModel(model string) {
 	if setter, ok := m.agent.(interface{ SetModel(string) }); ok {
 		setter.SetModel(model)
 	}
+}
+
+// LoadTemplates loads all available templates
+func (m *Manager) LoadTemplates() error {
+	return m.templateLoader.Load()
+}
+
+// ListTemplates returns all available template names
+func (m *Manager) ListTemplates() []string {
+	return m.templateLoader.ListTemplates()
+}
+
+// GetTemplateDetails returns details for all templates
+func (m *Manager) GetTemplateDetails() []*template.Template {
+	return m.templateLoader.GetTemplateDetails()
+}
+
+// SpawnFromTemplate creates and starts an agent from a template
+func (m *Manager) SpawnFromTemplate(templateName, input string) error {
+	tmpl, err := m.templateLoader.GetTemplate(templateName)
+	if err != nil {
+		return err
+	}
+
+	// Set model from template
+	if setter, ok := m.agent.(interface{ SetModel(string) }); ok {
+		setter.SetModel(tmpl.Model)
+	}
+
+	// Start the agent with the system prompt from template
+	fullInput := tmpl.System + "\n\n" + input
+	return m.Start(fullInput)
 }

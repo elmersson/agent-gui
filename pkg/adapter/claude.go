@@ -59,7 +59,7 @@ func (a *OpenCodeAdapter) Name() string {
 
 func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan string, <-chan error) {
 	outputCh := make(chan string, 100)
-	errCh := make(chan error, 1)
+	errCh := make(chan error, 100)
 	// Create a new token channel for this execution
 	a.TokenUsageChan = make(chan agent.TokenUsage, 100)
 
@@ -93,7 +93,9 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 		}
 
 		// Read stderr in background for error reporting
+		stderrDone := make(chan struct{})
 		go func() {
+			defer close(stderrDone)
 			stderrScanner := bufio.NewScanner(stderr)
 			var stderrOutput string
 			for stderrScanner.Scan() {
@@ -102,7 +104,7 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 			if stderrOutput != "" {
 				select {
 				case errCh <- fmt.Errorf("opencode stderr: %s", stderrOutput):
-				default:
+				case <-ctx.Done():
 				}
 			}
 		}()
@@ -171,8 +173,10 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 
 		if err := scanner.Err(); err != nil {
 			errCh <- fmt.Errorf("scan error: %w", err)
-			return
 		}
+
+		// Wait for stderr goroutine to finish
+		<-stderrDone
 
 		cmd.Wait()
 	}()
