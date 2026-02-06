@@ -16,6 +16,17 @@ const (
 	EventError         EventType = "error"
 	EventSessionSaved  EventType = "session.saved"
 	EventTokensUpdated EventType = "agent.tokens.updated"
+
+	// Pipeline lifecycle events
+	EventPipelineStarted   EventType = "pipeline.started"
+	EventPipelineCompleted EventType = "pipeline.completed"
+	EventPipelineFailed    EventType = "pipeline.failed"
+	EventPipelineCancelled EventType = "pipeline.cancelled"
+
+	// Stage lifecycle events
+	EventStageStarted   EventType = "stage.started"
+	EventStageCompleted EventType = "stage.completed"
+	EventStageFailed    EventType = "stage.failed"
 )
 
 type Event struct {

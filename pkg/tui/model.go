@@ -24,6 +24,9 @@ var commands = []string{
 	"model",
 	"templates",
 	"spawn-template",
+	"pipelines",
+	"run-pipeline",
+	"pipeline-status",
 	"clear",
 	"help",
 	"quit",
@@ -36,6 +39,7 @@ const (
 	ModeCommand
 	ModeModelSelect
 	ModeTemplateSelect
+	ModePipelineSelect
 )
 
 type Model struct {
@@ -70,9 +74,17 @@ type Model struct {
 	modelCursor        int
 	availableTemplates []string
 	templateCursor     int
+	availablePipelines []string
+	pipelineCursor     int
 
-	// Pending template
+	// Pending template/pipeline
 	pendingTemplate string
+	pendingPipeline string
+
+	// Pipeline progress
+	pipelineStatus    string
+	pipelineStages    []string
+	currentStageIndex int
 
 	// External interfaces
 	agentManager   interface{}
@@ -168,6 +180,20 @@ var (
 type OutputMsg string
 type StateMsg string
 type TokenUsageMsg agent.TokenUsage
+type PipelineStatusMsg struct {
+	Status      string
+	Stages      []string
+	CurrentIdx  int
+	StageName   string
+	StageOutput string
+}
+type StageProgressMsg struct {
+	StageName  string
+	StageIndex int
+	Total      int
+	Status     string
+	Output     string
+}
 
 func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string) Model {
 	if modelName == "" {
@@ -251,6 +277,8 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleModelSelectMode(msg)
 		case ModeTemplateSelect:
 			return m.handleTemplateSelectMode(msg)
+		case ModePipelineSelect:
+			return m.handlePipelineSelectMode(msg)
 		}
 
 	case OutputMsg:
@@ -263,6 +291,34 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TokenUsageMsg:
 		m.tokenUsage = agent.TokenUsage(msg)
+
+	case PipelineStatusMsg:
+		m.pipelineStatus = msg.Status
+		m.pipelineStages = msg.Stages
+		m.currentStageIndex = msg.CurrentIdx
+		if msg.StageName != "" {
+			m.rawOutput += fmt.Sprintf("\n**[Pipeline Stage: %s]**\n", msg.StageName)
+			m.updateViewportContent()
+		}
+
+	case StageProgressMsg:
+		statusIcon := "..."
+		switch msg.Status {
+		case "completed":
+			statusIcon = "[ok]"
+		case "failed":
+			statusIcon = "[X]"
+		case "running":
+			statusIcon = "[>]"
+		case "pending":
+			statusIcon = "[ ]"
+		}
+		m.rawOutput += fmt.Sprintf("\n%s Stage %d/%d: **%s** %s\n", statusIcon, msg.StageIndex+1, msg.Total, msg.StageName, msg.Status)
+		if msg.Output != "" && msg.Status == "completed" {
+			m.rawOutput += fmt.Sprintf("Output preview: %.100s...\n", msg.Output)
+		}
+		m.updateViewportContent()
+		m.viewport.GotoBottom()
 	}
 
 	return m, tea.Batch(cmds...)
@@ -285,7 +341,12 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, tea.Quit
 
 	case tea.KeyEsc:
-		if m.pendingTemplate != "" {
+		if m.pendingPipeline != "" {
+			m.rawOutput += fmt.Sprintf("\n*Cancelled pipeline: %s*\n", m.pendingPipeline)
+			m.pendingPipeline = ""
+			m.input.Placeholder = "Type your message..."
+			m.updateViewportContent()
+		} else if m.pendingTemplate != "" {
 			m.rawOutput += fmt.Sprintf("\n*Cancelled template: %s*\n", m.pendingTemplate)
 			m.pendingTemplate = ""
 			m.input.Placeholder = "Type your message..."
@@ -296,7 +357,23 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEnter:
 		value := m.input.Value()
 		if value != "" {
-			if m.pendingTemplate != "" {
+			if m.pendingPipeline != "" {
+				// Run pipeline
+				m.rawOutput += fmt.Sprintf("\n**Running pipeline %s** with input: %s\n", m.pendingPipeline, value)
+				m.updateViewportContent()
+
+				if loader, ok := m.agentManager.(interface{ LoadPipelines() error }); ok {
+					loader.LoadPipelines()
+				}
+				if am, ok := m.agentManager.(interface{ RunPipeline(string, string) error }); ok {
+					if err := am.RunPipeline(m.pendingPipeline, value); err != nil {
+						m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+						m.updateViewportContent()
+					}
+				}
+				m.pendingPipeline = ""
+				m.input.Placeholder = "Type your message..."
+			} else if m.pendingTemplate != "" {
 				// Spawn from template
 				m.rawOutput += fmt.Sprintf("\n**Spawning %s** with task: %s\n", m.pendingTemplate, value)
 				m.updateViewportContent()
@@ -550,6 +627,54 @@ func (m Model) handleTemplateSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handlePipelineSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyRunes:
+		if msg.Type == tea.KeyEsc || (len(msg.Runes) == 1 && msg.Runes[0] == 'q') {
+			m.mode = ModeNormal
+			m.input.Focus()
+			return m, nil
+		}
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'j':
+				if m.pipelineCursor < len(m.availablePipelines)-1 {
+					m.pipelineCursor++
+				}
+			case 'k':
+				if m.pipelineCursor > 0 {
+					m.pipelineCursor--
+				}
+			}
+		}
+
+	case tea.KeyUp:
+		if m.pipelineCursor > 0 {
+			m.pipelineCursor--
+		}
+
+	case tea.KeyDown:
+		if m.pipelineCursor < len(m.availablePipelines)-1 {
+			m.pipelineCursor++
+		}
+
+	case tea.KeyEnter:
+		if m.pipelineCursor < len(m.availablePipelines) {
+			m.pendingPipeline = m.availablePipelines[m.pipelineCursor]
+			m.input.Placeholder = fmt.Sprintf("Enter input for pipeline [%s]...", m.pendingPipeline)
+			m.rawOutput += fmt.Sprintf("\n**Pipeline selected:** `%s`\nEnter your input below.\n", m.pendingPipeline)
+			m.updateViewportContent()
+		}
+		m.mode = ModeNormal
+		m.input.Focus()
+
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
 func (m Model) executeCommand(cmdStr string) Model {
 	parts := strings.Fields(cmdStr)
 	if len(parts) == 0 {
@@ -685,6 +810,74 @@ func (m Model) executeCommand(cmdStr string) Model {
 			m.updateViewportContent()
 		}
 
+	case "pipelines":
+		if am, ok := m.agentManager.(interface{ LoadPipelines() error }); ok {
+			if err := am.LoadPipelines(); err != nil {
+				m.rawOutput += fmt.Sprintf("\n**Error loading pipelines:** %v\n", err)
+				m.updateViewportContent()
+				return m
+			}
+		} else {
+			m.rawOutput += "\n**Error:** Pipeline support not available\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		if am, ok := m.agentManager.(interface{ ListPipelines() []string }); ok {
+			m.availablePipelines = am.ListPipelines()
+			if len(m.availablePipelines) == 0 {
+				m.rawOutput += "\n**No pipelines found** in `pipelines/` directory\n"
+				m.rawOutput += "Create a YAML file in `pipelines/` to define a pipeline.\n"
+				m.updateViewportContent()
+				return m
+			}
+			m.pipelineCursor = 0
+			m.mode = ModePipelineSelect
+		} else {
+			m.rawOutput += "\n**Error:** Pipeline listing not available\n"
+			m.updateViewportContent()
+			return m
+		}
+
+	case "run-pipeline":
+		if len(args) > 0 {
+			pipelineName := args[0]
+			input := ""
+			if len(args) > 1 {
+				input = strings.Join(args[1:], " ")
+			}
+
+			if input == "" {
+				m.pendingPipeline = pipelineName
+				m.input.Placeholder = fmt.Sprintf("Enter input for pipeline [%s]...", pipelineName)
+				m.rawOutput += fmt.Sprintf("\n**Pipeline:** `%s`\nEnter your input below.\n", pipelineName)
+			} else {
+				m.rawOutput += fmt.Sprintf("\n**Running pipeline %s** with: %s\n", pipelineName, input)
+				if loader, ok := m.agentManager.(interface{ LoadPipelines() error }); ok {
+					loader.LoadPipelines()
+				}
+				if am, ok := m.agentManager.(interface{ RunPipeline(string, string) error }); ok {
+					if err := am.RunPipeline(pipelineName, input); err != nil {
+						m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+					}
+				}
+			}
+			m.updateViewportContent()
+		} else {
+			m.rawOutput += "\n**Usage:** `:run-pipeline <name> [input]`\n"
+			m.updateViewportContent()
+		}
+
+	case "pipeline-status":
+		if am, ok := m.agentManager.(interface{ GetPipelineStatus() string }); ok {
+			status := am.GetPipelineStatus()
+			m.rawOutput += fmt.Sprintf("\n**Pipeline Status:**\n%s\n", status)
+			m.updateViewportContent()
+		} else {
+			m.rawOutput += "\n**No pipeline running**\n"
+			m.updateViewportContent()
+		}
+
 	case "clear":
 		m.rawOutput = ""
 		m.viewport.SetContent("")
@@ -703,6 +896,9 @@ func (m Model) executeCommand(cmdStr string) Model {
 | **:model** <name> | Set model directly |
 | **:templates** | List/select templates |
 | **:spawn-template** <n> | Spawn from template |
+| **:pipelines** | List/select pipelines |
+| **:run-pipeline** <n> | Run a pipeline |
+| **:pipeline-status** | Show pipeline progress |
 | **:clear** | Clear output |
 | **:help** | Show this help |
 | **:quit** | Exit application |
@@ -742,6 +938,8 @@ func (m Model) View() string {
 		sections = append(sections, m.renderModelSelect())
 	case ModeTemplateSelect:
 		sections = append(sections, m.renderTemplateSelect())
+	case ModePipelineSelect:
+		sections = append(sections, m.renderPipelineSelect())
 	default:
 		sections = append(sections, m.renderOutput())
 		sections = append(sections, m.renderInput())
@@ -925,15 +1123,47 @@ func (m Model) renderTemplateSelect() string {
 		Render(content.String())
 }
 
+func (m Model) renderPipelineSelect() string {
+	var content strings.Builder
+
+	content.WriteString(titleStyle.Render("Select Pipeline") + "\n\n")
+
+	visibleHeight := m.height - 10
+	if visibleHeight < 5 {
+		visibleHeight = 5
+	}
+
+	startIdx := max(0, m.pipelineCursor-visibleHeight/2)
+	endIdx := min(startIdx+visibleHeight, len(m.availablePipelines))
+
+	for i := startIdx; i < endIdx; i++ {
+		pipeline := m.availablePipelines[i]
+		if i == m.pipelineCursor {
+			content.WriteString(listSelectedStyle.Render(pipeline) + "\n")
+		} else {
+			content.WriteString(listItemStyle.Render(pipeline) + "\n")
+		}
+	}
+
+	content.WriteString(fmt.Sprintf("\n%s", helpStyle.Render(fmt.Sprintf("[%d/%d] j/k:navigate Enter:select q/Esc:cancel", m.pipelineCursor+1, len(m.availablePipelines)))))
+
+	return borderStyle.
+		Width(m.width - 2).
+		Height(m.height - 6).
+		Render(content.String())
+}
+
 func (m Model) renderHelp() string {
 	var help string
 	switch m.mode {
 	case ModeCommand:
 		help = "Tab:complete | Up/Down:suggestions | Enter:execute | Esc:cancel"
-	case ModeModelSelect, ModeTemplateSelect:
+	case ModeModelSelect, ModeTemplateSelect, ModePipelineSelect:
 		help = "j/k:navigate | Enter:select | q/Esc:cancel"
 	default:
-		if m.pendingTemplate != "" {
+		if m.pendingPipeline != "" {
+			help = fmt.Sprintf("Enter input for pipeline [%s] | Esc:cancel", m.pendingPipeline)
+		} else if m.pendingTemplate != "" {
 			help = fmt.Sprintf("Enter task for [%s] | Esc:cancel", m.pendingTemplate)
 		} else {
 			help = ":command | Enter:send | Ctrl+C:quit"

@@ -2,10 +2,12 @@ package manager
 
 import (
 	"context"
+	"fmt"
 	"sync"
 
 	"github.com/rasmuselmersson/opencode/pkg/agent"
 	"github.com/rasmuselmersson/opencode/pkg/events"
+	"github.com/rasmuselmersson/opencode/pkg/pipeline"
 	"github.com/rasmuselmersson/opencode/pkg/template"
 )
 
@@ -27,15 +29,86 @@ type Manager struct {
 	paused         bool
 	pauseCond      *sync.Cond
 	templateLoader *template.Loader
+	pipelineLoader *pipeline.PipelineLoader
+	pipelineRunner *pipeline.Runner
+	pipelineStore  *pipeline.ExecutionStore
 }
 
-func NewManager(agent agent.Agent, bus events.Bus) *Manager {
+// TemplateAgentFactory implements pipeline.AgentFactory using templates
+type TemplateAgentFactory struct {
+	loader    *template.Loader
+	baseAgent agent.Agent
+}
+
+func (f *TemplateAgentFactory) CreateAgent(templateName string) (agent.Agent, error) {
+	tmpl, err := f.loader.GetTemplate(templateName)
+	if err != nil {
+		return nil, fmt.Errorf("template not found: %s", templateName)
+	}
+
+	// Create a template-aware agent wrapper
+	return &TemplateAgent{
+		baseAgent: f.baseAgent,
+		template:  tmpl,
+	}, nil
+}
+
+// TemplateAgent wraps an agent with template configuration
+type TemplateAgent struct {
+	baseAgent agent.Agent
+	template  *template.Template
+}
+
+func (a *TemplateAgent) Name() string {
+	return a.template.Name
+}
+
+func (a *TemplateAgent) Execute(ctx context.Context, input string) (<-chan string, <-chan error) {
+	// Apply template system prompt
+	fullInput := a.template.System + "\n\n" + input
+
+	// Set model if supported
+	if setter, ok := a.baseAgent.(interface{ SetModel(string) }); ok {
+		setter.SetModel(a.template.Model)
+	}
+
+	return a.baseAgent.Execute(ctx, fullInput)
+}
+
+func (a *TemplateAgent) GetTokenUsageChan() <-chan agent.TokenUsage {
+	if trackingAgent, ok := a.baseAgent.(agent.TokenTrackingAgent); ok {
+		return trackingAgent.GetTokenUsageChan()
+	}
+	ch := make(chan agent.TokenUsage)
+	close(ch)
+	return ch
+}
+
+func NewManager(agentInstance agent.Agent, bus events.Bus) *Manager {
+	templateLoader := template.NewLoader("templates")
+	pipelineLoader := pipeline.NewPipelineLoader("pipelines")
+
+	// Create execution store
+	pipelineStore, _ := pipeline.NewExecutionStore("pipeline-executions")
+
+	// Create agent factory
+	factory := &TemplateAgentFactory{
+		loader:    templateLoader,
+		baseAgent: agentInstance,
+	}
+
+	// Create pipeline runner
+	pipelineRunner := pipeline.NewRunner(bus, factory, pipelineStore)
+
 	return &Manager{
-		agent:          agent,
+		agent:          agentInstance,
 		bus:            bus,
 		state:          StateIdle,
 		pauseCond:      sync.NewCond(&sync.Mutex{}),
-		templateLoader: template.NewLoader("templates"),
+		templateLoader: templateLoader,
+		pipelineLoader: pipelineLoader,
+		pipelineRunner: pipelineRunner,
+		pipelineStore:  pipelineStore,
 	}
 }
 
@@ -224,4 +297,87 @@ func (m *Manager) SpawnFromTemplate(templateName, input string) error {
 	// Start the agent with the system prompt from template
 	fullInput := tmpl.System + "\n\n" + input
 	return m.Start(fullInput)
+}
+
+// LoadPipelines loads all available pipelines
+func (m *Manager) LoadPipelines() error {
+	return m.pipelineLoader.Load()
+}
+
+// ListPipelines returns all available pipeline names
+func (m *Manager) ListPipelines() []string {
+	return m.pipelineLoader.ListPipelines()
+}
+
+// GetPipelineDetails returns details for all pipelines
+func (m *Manager) GetPipelineDetails() []*pipeline.Pipeline {
+	return m.pipelineLoader.GetPipelineDetails()
+}
+
+// RunPipeline executes a pipeline with the given input
+func (m *Manager) RunPipeline(pipelineName, input string) error {
+	// Load templates first (needed for pipeline stages)
+	if err := m.templateLoader.Load(); err != nil {
+		return fmt.Errorf("failed to load templates: %w", err)
+	}
+
+	// Get the pipeline
+	p, err := m.pipelineLoader.GetPipeline(pipelineName)
+	if err != nil {
+		return err
+	}
+
+	// Update state
+	m.stateMutex.Lock()
+	m.state = StateRunning
+	m.stateMutex.Unlock()
+
+	// Execute pipeline in background
+	go func() {
+		ctx := context.Background()
+		_, err := m.pipelineRunner.Execute(ctx, p, input)
+
+		m.stateMutex.Lock()
+		m.state = StateIdle
+		m.stateMutex.Unlock()
+
+		if err != nil {
+			m.bus.Publish(events.Event{
+				Type: events.EventError,
+				Data: err.Error(),
+			})
+		}
+	}()
+
+	return nil
+}
+
+// GetPipelineStatus returns the current pipeline execution status
+func (m *Manager) GetPipelineStatus() string {
+	exec := m.pipelineRunner.GetCurrentExecution()
+	if exec == nil {
+		return "No pipeline running"
+	}
+
+	status := fmt.Sprintf("Pipeline: %s\nStatus: %s\n", exec.Pipeline.Name, exec.Status)
+	for i, stage := range exec.Stages {
+		icon := "[ ]"
+		switch stage.Status {
+		case pipeline.StageStatusCompleted:
+			icon = "[ok]"
+		case pipeline.StageStatusRunning:
+			icon = "[>]"
+		case pipeline.StageStatusFailed:
+			icon = "[X]"
+		case pipeline.StageStatusSkipped:
+			icon = "[-]"
+		}
+		status += fmt.Sprintf("  %s %d. %s (%s)\n", icon, i+1, stage.Stage.Name, stage.Status)
+	}
+	return status
+}
+
+// CancelPipeline stops the currently running pipeline
+func (m *Manager) CancelPipeline() {
+	m.pipelineRunner.Cancel()
 }
