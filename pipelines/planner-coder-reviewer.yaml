@@ -1,0 +1,18 @@
+name: planner-coder-reviewer
+description: A pipeline that plans, codes, and reviews a task
+stages:
+  - name: planner
+    template: planner
+    description: Plans the approach for the given task
+    continue_on_error: false
+  - name: coder
+    template: coder
+    description: Implements the plan from the planner
+    continue_on_error: false
+  - name: reviewer
+    template: code-reviewer
+    description: Reviews the code from the coder
+    continue_on_error: false
+metadata:
+  category: development
+  workflow: full-cycle

@@ -41,6 +41,13 @@ func main() {
 	tokensCh := bus.Subscribe(events.EventTokensUpdated)
 	errorCh := bus.Subscribe(events.EventError)
 
+	// Pipeline events
+	pipelineStartedCh := bus.Subscribe(events.EventPipelineStarted)
+	pipelineCompletedCh := bus.Subscribe(events.EventPipelineCompleted)
+	pipelineFailedCh := bus.Subscribe(events.EventPipelineFailed)
+	stageStartedCh := bus.Subscribe(events.EventStageStarted)
+	stageCompletedCh := bus.Subscribe(events.EventStageCompleted)
+
 	go func() {
 		for event := range outputCh {
 			if chunk, ok := event.Data.(string); ok {
@@ -90,6 +97,40 @@ func main() {
 			if errMsg, ok := event.Data.(string); ok {
 				p.Send(tui.OutputMsg("\n[ERROR] " + errMsg + "\n"))
 			}
+		}
+	}()
+
+	// Pipeline event handlers
+	go func() {
+		for range pipelineStartedCh {
+			p.Send(tui.OutputMsg("\n**Pipeline started**\n"))
+			p.Send(tui.StateMsg("running"))
+		}
+	}()
+
+	go func() {
+		for range pipelineCompletedCh {
+			p.Send(tui.OutputMsg("\n**Pipeline completed**\n"))
+			p.Send(tui.StateMsg("idle"))
+		}
+	}()
+
+	go func() {
+		for range pipelineFailedCh {
+			p.Send(tui.OutputMsg("\n**Pipeline failed**\n"))
+			p.Send(tui.StateMsg("idle"))
+		}
+	}()
+
+	go func() {
+		for range stageStartedCh {
+			p.Send(tui.OutputMsg("\n[Stage started]\n"))
+		}
+	}()
+
+	go func() {
+		for range stageCompletedCh {
+			p.Send(tui.OutputMsg("\n[Stage completed]\n"))
 		}
 	}()
 
