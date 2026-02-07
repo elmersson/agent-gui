@@ -114,6 +114,10 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 		var estimatedOutputTokens int
 
 		scanner := bufio.NewScanner(stdout)
+		// Increase buffer size to handle large JSON responses (default is 64KB, increase to 10MB)
+		const maxScannerBuffer = 10 * 1024 * 1024
+		scanner.Buffer(make([]byte, 0, 64*1024), maxScannerBuffer)
+
 		for scanner.Scan() {
 			line := scanner.Bytes()
 

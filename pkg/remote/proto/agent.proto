@@ -1,0 +1,119 @@
+syntax = "proto3";
+
+package remote;
+
+option go_package = "github.com/rasmuselmersson/opencode/pkg/remote/proto";
+
+// AgentService defines the remote agent execution protocol
+service AgentService {
+  // Execute runs an agent remotely with bidirectional streaming
+  rpc Execute(stream ExecuteRequest) returns (stream ExecuteResponse);
+  
+  // HealthCheck verifies the remote server is healthy
+  rpc HealthCheck(HealthCheckRequest) returns (HealthCheckResponse);
+}
+
+// ExecuteRequest is sent by the client to initiate or control execution
+message ExecuteRequest {
+  oneof payload {
+    StartExecution start = 1;
+    CancelExecution cancel = 2;
+    Heartbeat heartbeat = 3;
+  }
+}
+
+// StartExecution contains initial execution parameters
+message StartExecution {
+  string request_id = 1;     // Unique identifier for this execution
+  string session_id = 2;      // Session identifier for grouping requests
+  string agent_name = 3;      // Name of the agent to execute
+  string input = 4;           // Input prompt for the agent
+  string auth_token = 5;      // Authentication token
+  map<string, string> metadata = 6; // Additional metadata
+}
+
+// CancelExecution requests termination of ongoing execution
+message CancelExecution {
+  string request_id = 1;
+}
+
+// Heartbeat keeps the connection alive
+message Heartbeat {
+  int64 timestamp = 1;
+}
+
+// ExecuteResponse is streamed by the server during execution
+message ExecuteResponse {
+  string request_id = 1;
+  
+  oneof payload {
+    OutputChunk output = 2;
+    ErrorMessage error = 3;
+    TokenUsageUpdate tokens = 4;
+    ExecutionStatus status = 5;
+    HeartbeatAck heartbeat_ack = 6;
+  }
+}
+
+// OutputChunk contains a piece of agent output
+message OutputChunk {
+  string text = 1;
+  int64 timestamp = 2;
+}
+
+// ErrorMessage contains error information
+message ErrorMessage {
+  string message = 1;
+  string code = 2;
+  bool fatal = 3;  // If true, execution has terminated
+}
+
+// TokenUsageUpdate provides real-time token usage information
+message TokenUsageUpdate {
+  int32 input_tokens = 1;
+  int32 output_tokens = 2;
+  int32 cache_read = 3;
+  int32 cache_write = 4;
+  int32 total_tokens = 5;
+  double cost_usd = 6;
+  bool is_final = 7;  // True if this is the final count (not an estimate)
+}
+
+// ExecutionStatus indicates the state of execution
+message ExecutionStatus {
+  enum State {
+    UNKNOWN = 0;
+    STARTED = 1;
+    RUNNING = 2;
+    COMPLETED = 3;
+    FAILED = 4;
+    CANCELLED = 5;
+  }
+  
+  State state = 1;
+  string message = 2;
+  int64 timestamp = 3;
+}
+
+// HeartbeatAck acknowledges a heartbeat
+message HeartbeatAck {
+  int64 timestamp = 1;
+}
+
+// HealthCheckRequest verifies server availability
+message HealthCheckRequest {
+  string service = 1;
+}
+
+// HealthCheckResponse returns server health status
+message HealthCheckResponse {
+  enum Status {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  
+  Status status = 1;
+  string message = 2;
+}

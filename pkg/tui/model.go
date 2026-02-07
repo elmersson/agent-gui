@@ -50,6 +50,12 @@ type Model struct {
 	state      string
 	tokenUsage agent.TokenUsage
 
+	// Remote connection state
+	remoteState   string
+	remoteAddress string
+	remoteAttempt int
+	remoteError   string
+
 	// UI components
 	viewport    viewport.Model
 	input       textinput.Model
@@ -180,6 +186,12 @@ var (
 type OutputMsg string
 type StateMsg string
 type TokenUsageMsg agent.TokenUsage
+type RemoteStatusMsg struct {
+	State   string
+	Address string
+	Attempt int
+	Error   string
+}
 type PipelineStatusMsg struct {
 	Status      string
 	Stages      []string
@@ -193,6 +205,46 @@ type StageProgressMsg struct {
 	Total      int
 	Status     string
 	Output     string
+}
+
+// calculateWrapWidth determines the optimal text wrap width
+// based on terminal width, accounting for borders and padding
+func calculateWrapWidth(terminalWidth int) int {
+	const (
+		minWrapWidth = 40  // Minimum for readability
+		maxWrapWidth = 120 // Maximum for readability
+		padding      = 6   // Account for borders, padding
+	)
+
+	wrapWidth := terminalWidth - padding
+
+	if wrapWidth < minWrapWidth {
+		return minWrapWidth
+	}
+	if wrapWidth > maxWrapWidth {
+		return maxWrapWidth
+	}
+
+	return wrapWidth
+}
+
+// formatNumber adds comma separators to numbers for readability
+// Example: 1234567 -> "1,234,567"
+func formatNumber(n int) string {
+	if n < 1000 {
+		return fmt.Sprintf("%d", n)
+	}
+
+	// Convert to string and add commas
+	s := fmt.Sprintf("%d", n)
+	var result []rune
+	for i, digit := range s {
+		if i > 0 && (len(s)-i)%3 == 0 {
+			result = append(result, ',')
+		}
+		result = append(result, digit)
+	}
+	return string(result)
 }
 
 func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string) Model {
@@ -218,10 +270,11 @@ func NewModel(agentManager interface{}, sessionManager interface{}, bus interfac
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
 
-	// Create markdown renderer
+	// Create markdown renderer with dynamic wrap width
+	wrapWidth := calculateWrapWidth(80) // Default to 80 until first WindowSizeMsg
 	renderer, _ := glamour.NewTermRenderer(
 		glamour.WithAutoStyle(),
-		glamour.WithWordWrap(80),
+		glamour.WithWordWrap(wrapWidth),
 	)
 
 	return Model{
@@ -264,7 +317,14 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.input.Width = msg.Width - 6
 		m.commandLine.Width = msg.Width - 6
 
-		// Re-render content
+		// Recreate renderer with new wrap width
+		wrapWidth := calculateWrapWidth(msg.Width)
+		m.renderer, _ = glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(wrapWidth),
+		)
+
+		// Re-render content with new width
 		m.updateViewportContent()
 
 	case tea.KeyMsg:
@@ -291,6 +351,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case TokenUsageMsg:
 		m.tokenUsage = agent.TokenUsage(msg)
+
+	case RemoteStatusMsg:
+		m.remoteState = msg.State
+		m.remoteAddress = msg.Address
+		m.remoteAttempt = msg.Attempt
+		m.remoteError = msg.Error
 
 	case PipelineStatusMsg:
 		m.pipelineStatus = msg.Status
@@ -971,15 +1037,56 @@ func (m Model) renderHeader() string {
 		Foreground(mutedColor).
 		Render(fmt.Sprintf(" model: %s ", m.modelName))
 
-	// Token info
+	// Token info with detailed breakdown
 	var tokenInfo string
 	if m.tokenUsage.TotalTokens > 0 {
-		tokenInfo = tokenStyle.Render(fmt.Sprintf(" tokens: %d ", m.tokenUsage.TotalTokens))
+		// Format tokens with comma separators for readability
+		// Show input/output breakdown to help users understand token consumption
+		tokenInfo = tokenStyle.Render(fmt.Sprintf(" in:%s out:%s ",
+			formatNumber(m.tokenUsage.InputTokens),
+			formatNumber(m.tokenUsage.OutputTokens)))
+
+		// Show cache hits if present (cache reading saves costs)
+		if m.tokenUsage.CacheRead > 0 {
+			tokenInfo += tokenStyle.Render(fmt.Sprintf("cache:%s ", formatNumber(m.tokenUsage.CacheRead)))
+		}
+
+		// Display cost with 4 decimal precision for accurate tracking
 		tokenInfo += costStyle.Render(fmt.Sprintf(" $%.4f ", m.tokenUsage.CostUSD))
+	}
+
+	// Remote connection status
+	var remoteInfo string
+	if m.remoteState != "" {
+		var remoteStyle lipgloss.Style
+		var statusText string
+
+		switch m.remoteState {
+		case "connected":
+			remoteStyle = lipgloss.NewStyle().Foreground(secondaryColor).Bold(true)
+			statusText = "● Remote"
+		case "connecting":
+			remoteStyle = lipgloss.NewStyle().Foreground(accentColor)
+			statusText = "◌ Connecting..."
+		case "reconnecting":
+			remoteStyle = lipgloss.NewStyle().Foreground(accentColor)
+			statusText = fmt.Sprintf("◌ Reconnecting (attempt %d)...", m.remoteAttempt)
+		case "disconnected":
+			remoteStyle = lipgloss.NewStyle().Foreground(mutedColor)
+			statusText = "○ Disconnected"
+		case "failed":
+			remoteStyle = lipgloss.NewStyle().Foreground(errorColor).Bold(true)
+			statusText = "✗ Connection Failed"
+		}
+
+		remoteInfo = remoteStyle.Render(" " + statusText + " ")
 	}
 
 	// Build header line
 	left := lipgloss.JoinHorizontal(lipgloss.Center, agentInfo, " ", statusBadge, modelInfo)
+	if remoteInfo != "" {
+		left = lipgloss.JoinHorizontal(lipgloss.Center, left, " ", remoteInfo)
+	}
 	right := tokenInfo
 
 	// Calculate spacing

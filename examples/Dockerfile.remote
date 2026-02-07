@@ -1,0 +1,58 @@
+# Multi-stage build for remote agent server
+
+# Stage 1: Build
+FROM golang:1.25-bookworm AS builder
+
+WORKDIR /app
+
+# Copy go mod files
+COPY go.mod go.sum ./
+RUN go mod download
+
+# Copy source code
+COPY . .
+
+# Build the remote agent server
+RUN CGO_ENABLED=0 GOOS=linux go build -a -installsuffix cgo -o opencode-remote ./cmd/remote-agent
+
+# Stage 2: Runtime
+FROM debian:bookworm-slim
+
+# Install ca-certificates for HTTPS calls
+RUN apt-get update && apt-get install -y ca-certificates && rm -rf /var/lib/apt/lists/*
+
+# Create non-root user
+RUN useradd -m -u 1000 opencode
+
+WORKDIR /home/opencode
+
+# Copy binary from builder
+COPY --from=builder /app/opencode-remote /usr/local/bin/opencode-remote
+
+# Set permissions
+RUN chown opencode:opencode /usr/local/bin/opencode-remote
+
+# Switch to non-root user
+USER opencode
+
+# Expose gRPC port
+EXPOSE 50051
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=5s --start-period=5s --retries=3 \
+  CMD nc -z localhost 50051 || exit 1
+
+# Environment variables (override via docker-compose or CLI)
+ENV OPENCODE_API_KEY=""
+ENV AUTH_TOKENS=""
+ENV MODEL="claude-sonnet-4-20250514"
+ENV MAX_CONCURRENT="10"
+ENV TIMEOUT="30m"
+
+# Run the server
+CMD opencode-remote \
+    --port 50051 \
+    --tokens "${AUTH_TOKENS}" \
+    --model "${MODEL}" \
+    --max-concurrent ${MAX_CONCURRENT} \
+    --timeout "${TIMEOUT}"
