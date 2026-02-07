@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  # Remote agent server
+  opencode-remote:
+    build:
+      context: ..
+      dockerfile: examples/Dockerfile.remote
+    ports:
+      - "50051:50051"
+    environment:
+      - OPENCODE_API_KEY=${OPENCODE_API_KEY}
+      - AUTH_TOKENS=${AUTH_TOKENS}
+      - MODEL=claude-sonnet-4-20250514
+      - MAX_CONCURRENT=10
+      - TIMEOUT=30m
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "50051"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+    networks:
+      - opencode-network
+
+  # Optional: Nginx reverse proxy with TLS
+  nginx:
+    image: nginx:alpine
+    ports:
+      - "443:443"
+    volumes:
+      - ./nginx.conf:/etc/nginx/nginx.conf:ro
+      - ./certs:/etc/nginx/certs:ro
+    depends_on:
+      - opencode-remote
+    networks:
+      - opencode-network
+
+networks:
+  opencode-network:
+    driver: bridge

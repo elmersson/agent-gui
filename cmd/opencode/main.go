@@ -1,12 +1,16 @@
 package main
 
 import (
+	"fmt"
+	"os"
+
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/rasmuselmersson/opencode/pkg/adapter"
 	"github.com/rasmuselmersson/opencode/pkg/agent"
 	"github.com/rasmuselmersson/opencode/pkg/events"
 	"github.com/rasmuselmersson/opencode/pkg/manager"
+	"github.com/rasmuselmersson/opencode/pkg/remote"
 	"github.com/rasmuselmersson/opencode/pkg/session"
 	"github.com/rasmuselmersson/opencode/pkg/tui"
 )
@@ -14,12 +18,39 @@ import (
 func main() {
 	bus := events.NewEventBus()
 
-	// Don't override the model - let opencode use its configured default
-	openCodeAdapter := adapter.NewClaudeAdapter(agent.Config{
-		Model: "", // Use opencode's configured model
-	})
+	// Create agent based on environment configuration
+	var agentInstance agent.Agent
 
-	agentManager := manager.NewManager(openCodeAdapter, bus)
+	// Check if remote mode is enabled via environment variable
+	remoteAddr := os.Getenv("OPENCODE_REMOTE_ADDRESS")
+	remoteToken := os.Getenv("OPENCODE_REMOTE_TOKEN")
+
+	if remoteAddr != "" {
+		// Remote mode
+		if remoteToken == "" {
+			fmt.Fprintf(os.Stderr, "Error: OPENCODE_REMOTE_TOKEN must be set when using remote agents\n")
+			os.Exit(1)
+		}
+
+		remoteConfig := remote.RemoteConfig{
+			Address:              remoteAddr,
+			AuthToken:            remoteToken,
+			AgentName:            "opencode",
+			TLSEnabled:           os.Getenv("OPENCODE_REMOTE_TLS") == "true",
+			MaxReconnectAttempts: 5,
+			ReconnectBackoffBase: 1000, // 1 second
+		}
+
+		agentInstance = adapter.NewRemoteAdapter(remoteConfig, bus)
+		fmt.Printf("Using remote agent at: %s\n", remoteAddr)
+	} else {
+		// Local mode (default)
+		agentInstance = adapter.NewClaudeAdapter(agent.Config{
+			Model: "", // Use opencode's configured model
+		})
+	}
+
+	agentManager := manager.NewManager(agentInstance, bus)
 
 	sessionManager, err := session.NewManager("sessions")
 	if err != nil {
@@ -47,6 +78,13 @@ func main() {
 	pipelineFailedCh := bus.Subscribe(events.EventPipelineFailed)
 	stageStartedCh := bus.Subscribe(events.EventStageStarted)
 	stageCompletedCh := bus.Subscribe(events.EventStageCompleted)
+
+	// Remote connection events
+	remoteConnectingCh := bus.Subscribe(events.EventRemoteConnecting)
+	remoteConnectedCh := bus.Subscribe(events.EventRemoteConnected)
+	remoteDisconnectedCh := bus.Subscribe(events.EventRemoteDisconnected)
+	remoteReconnectingCh := bus.Subscribe(events.EventRemoteReconnecting)
+	remoteFailedCh := bus.Subscribe(events.EventRemoteFailed)
 
 	go func() {
 		for event := range outputCh {
@@ -131,6 +169,55 @@ func main() {
 	go func() {
 		for range stageCompletedCh {
 			p.Send(tui.OutputMsg("\n[Stage completed]\n"))
+		}
+	}()
+
+	// Remote connection event handlers
+	go func() {
+		for range remoteConnectingCh {
+			p.Send(tui.RemoteStatusMsg{State: "connecting"})
+		}
+	}()
+
+	go func() {
+		for event := range remoteConnectedCh {
+			var address string
+			if data, ok := event.Data.(map[string]interface{}); ok {
+				if addr, ok := data["address"].(string); ok {
+					address = addr
+				}
+			}
+			p.Send(tui.RemoteStatusMsg{State: "connected", Address: address})
+		}
+	}()
+
+	go func() {
+		for range remoteDisconnectedCh {
+			p.Send(tui.RemoteStatusMsg{State: "disconnected"})
+		}
+	}()
+
+	go func() {
+		for event := range remoteReconnectingCh {
+			attempt := 0
+			if data, ok := event.Data.(map[string]interface{}); ok {
+				if a, ok := data["attempt"].(int); ok {
+					attempt = a
+				}
+			}
+			p.Send(tui.RemoteStatusMsg{State: "reconnecting", Attempt: attempt})
+		}
+	}()
+
+	go func() {
+		for event := range remoteFailedCh {
+			var errMsg string
+			if data, ok := event.Data.(map[string]interface{}); ok {
+				if e, ok := data["error"].(string); ok {
+					errMsg = e
+				}
+			}
+			p.Send(tui.RemoteStatusMsg{State: "failed", Error: errMsg})
 		}
 	}()
 

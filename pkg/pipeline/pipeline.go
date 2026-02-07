@@ -323,13 +323,19 @@ func NewRunner(bus events.Bus, factory AgentFactory, store *ExecutionStore) *Run
 func (r *Runner) Execute(ctx context.Context, pipeline *Pipeline, input string) (*PipelineExecution, error) {
 	r.mu.Lock()
 
+	// Prevent re-entry if already running
+	if r.current != nil {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("pipeline already running: %s", r.current.Pipeline.Name)
+	}
+
 	ctx, cancel := context.WithCancel(ctx)
 	r.ctx = ctx
 	r.cancel = cancel
 
 	// Initialize execution
 	exec := &PipelineExecution{
-		ID:           time.Now().Format("20060102-150405") + "-" + pipeline.Name,
+		ID:           time.Now().Format("20060102-150405.000") + "-" + pipeline.Name,
 		Pipeline:     *pipeline,
 		Status:       PipelineStatusPending,
 		Stages:       make([]StageExecution, len(pipeline.Stages)),
@@ -497,13 +503,19 @@ func (r *Runner) executeStage(ctx context.Context, stage Stage, input string) (s
 	}
 
 	var output string
+	var outputDone, errDone bool
 	for {
 		select {
 		case <-ctx.Done():
 			return output, tokens, ctx.Err()
 		case chunk, ok := <-outputCh:
 			if !ok {
-				return output, tokens, nil
+				outputDone = true
+				outputCh = nil // Stop selecting on this channel
+				if outputDone && errDone {
+					return output, tokens, nil
+				}
+				continue
 			}
 			output += chunk
 
@@ -514,11 +526,21 @@ func (r *Runner) executeStage(ctx context.Context, stage Stage, input string) (s
 				Data:      chunk,
 			})
 		case usage, ok := <-tokenCh:
-			if ok {
-				tokens = usage
+			if !ok {
+				tokenCh = nil // Stop selecting on this channel
+				continue
 			}
+			tokens = usage
 		case err, ok := <-errCh:
-			if ok && err != nil {
+			if !ok {
+				errDone = true
+				errCh = nil // Stop selecting on this channel
+				if outputDone && errDone {
+					return output, tokens, nil
+				}
+				continue
+			}
+			if err != nil {
 				return output, tokens, err
 			}
 		}
@@ -554,7 +576,13 @@ func (r *Runner) finishExecution(exec *PipelineExecution) {
 
 	// Persist execution
 	if r.store != nil {
-		r.store.Save(exec)
+		if err := r.store.Save(exec); err != nil {
+			// Log error but don't fail - execution is already complete
+			r.bus.Publish(events.Event{
+				Type: events.EventError,
+				Data: fmt.Sprintf("failed to save pipeline execution: %v", err),
+			})
+		}
 	}
 
 	r.mu.Lock()

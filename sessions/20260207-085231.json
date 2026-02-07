@@ -1,0 +1,16 @@
+{
+  "id": "20260207-085231",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "Hey! How can I help you today?",
+  "start_time": "2026-02-07T08:52:31.533604+01:00",
+  "end_time": "2026-02-07T08:52:34.723275+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 12,
+    "cache_write": 11524,
+    "total_tokens": 14,
+    "cost_usd": 0.043401
+  }
+}

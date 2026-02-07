@@ -316,21 +316,31 @@ func (m *Manager) GetPipelineDetails() []*pipeline.Pipeline {
 
 // RunPipeline executes a pipeline with the given input
 func (m *Manager) RunPipeline(pipelineName, input string) error {
+	// Check if already running
+	m.stateMutex.Lock()
+	if m.state == StateRunning {
+		m.stateMutex.Unlock()
+		return fmt.Errorf("a pipeline or agent is already running")
+	}
+	m.state = StateRunning
+	m.stateMutex.Unlock()
+
 	// Load templates first (needed for pipeline stages)
 	if err := m.templateLoader.Load(); err != nil {
+		m.stateMutex.Lock()
+		m.state = StateIdle
+		m.stateMutex.Unlock()
 		return fmt.Errorf("failed to load templates: %w", err)
 	}
 
 	// Get the pipeline
 	p, err := m.pipelineLoader.GetPipeline(pipelineName)
 	if err != nil {
+		m.stateMutex.Lock()
+		m.state = StateIdle
+		m.stateMutex.Unlock()
 		return err
 	}
-
-	// Update state
-	m.stateMutex.Lock()
-	m.state = StateRunning
-	m.stateMutex.Unlock()
 
 	// Execute pipeline in background
 	go func() {

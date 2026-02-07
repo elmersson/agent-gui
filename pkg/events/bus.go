@@ -27,6 +27,13 @@ const (
 	EventStageStarted   EventType = "stage.started"
 	EventStageCompleted EventType = "stage.completed"
 	EventStageFailed    EventType = "stage.failed"
+
+	// Remote connection events
+	EventRemoteConnecting   EventType = "remote.connecting"
+	EventRemoteConnected    EventType = "remote.connected"
+	EventRemoteDisconnected EventType = "remote.disconnected"
+	EventRemoteReconnecting EventType = "remote.reconnecting"
+	EventRemoteFailed       EventType = "remote.failed"
 )
 
 type Event struct {
