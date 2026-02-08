@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"sort"
+	"strings"
 	"time"
 
 	"github.com/rasmuselmersson/opencode/pkg/agent"
@@ -94,4 +96,51 @@ func (m *Manager) EndSession() error {
 
 	m.current = nil
 	return nil
+}
+
+// ListSessions returns a list of all session IDs, sorted by most recent first
+func (m *Manager) ListSessions() ([]string, error) {
+	entries, err := os.ReadDir(m.sessionsDir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return []string{}, nil
+		}
+		return nil, err
+	}
+
+	var sessions []string
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		// Remove .json extension to get session ID
+		sessionID := strings.TrimSuffix(entry.Name(), ".json")
+		sessions = append(sessions, sessionID)
+	}
+
+	// Sort by newest first (session IDs are timestamps)
+	sort.Sort(sort.Reverse(sort.StringSlice(sessions)))
+
+	return sessions, nil
+}
+
+// LoadSession loads a session by ID
+func (m *Manager) LoadSession(sessionID string) (*Session, error) {
+	filePath := filepath.Join(m.sessionsDir, sessionID+".json")
+	data, err := os.ReadFile(filePath)
+	if err != nil {
+		return nil, err
+	}
+
+	var session Session
+	if err := json.Unmarshal(data, &session); err != nil {
+		return nil, err
+	}
+
+	return &session, nil
+}
+
+// GetSessionsDir returns the sessions directory path
+func (m *Manager) GetSessionsDir() string {
+	return m.sessionsDir
 }
