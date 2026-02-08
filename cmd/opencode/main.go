@@ -11,6 +11,7 @@ import (
 	"github.com/rasmuselmersson/opencode/pkg/events"
 	"github.com/rasmuselmersson/opencode/pkg/manager"
 	"github.com/rasmuselmersson/opencode/pkg/remote"
+	"github.com/rasmuselmersson/opencode/pkg/replay"
 	"github.com/rasmuselmersson/opencode/pkg/session"
 	"github.com/rasmuselmersson/opencode/pkg/tui"
 )
@@ -57,12 +58,23 @@ func main() {
 		panic(err)
 	}
 
-	model := tui.NewModel(agentManager, sessionManager, bus, "auto")
+	// Create replay engine for session replay functionality
+	replayEngine := replay.NewEngine("sessions")
+
+	model := tui.NewModel(agentManager, sessionManager, bus, "auto", replayEngine)
+
+	// Note: replay observer will be set up after program is created
 
 	p := tea.NewProgram(
 		model,
 		tea.WithAltScreen(),
 	)
+
+	// Set up replay engine observer to forward events to TUI
+	// Use goroutine to avoid deadlock when LoadSession is called from within Update
+	replayEngine.AddObserver(func(event replay.ReplayEvent) {
+		go p.Send(tui.ReplayEventMsg(event))
+	})
 
 	outputCh := bus.Subscribe(events.EventOutputChunk)
 	startedCh := bus.Subscribe(events.EventAgentStarted)

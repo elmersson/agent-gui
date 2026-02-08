@@ -5,6 +5,7 @@ import (
 	"os/exec"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rasmuselmersson/opencode/pkg/agent"
+	"github.com/rasmuselmersson/opencode/pkg/replay"
 )
 
 // Commands available for autocomplete
@@ -27,6 +29,9 @@ var commands = []string{
 	"pipelines",
 	"run-pipeline",
 	"pipeline-status",
+	"sessions",
+	"pipeline-executions",
+	"replay",
 	"clear",
 	"help",
 	"quit",
@@ -40,6 +45,9 @@ const (
 	ModeModelSelect
 	ModeTemplateSelect
 	ModePipelineSelect
+	ModeSessionSelect
+	ModePipelineExecutionSelect
+	ModeReplay
 )
 
 type Model struct {
@@ -91,6 +99,21 @@ type Model struct {
 	pipelineStatus    string
 	pipelineStages    []string
 	currentStageIndex int
+
+	// Replay state
+	replayEngine           *replay.Engine
+	availableSessions      []replay.Session
+	sessionCursor          int
+	availablePipelineExecs []replay.PipelineExecution
+	pipelineExecCursor     int
+	replayOutput           string
+	replayPosition         time.Duration
+	replayDuration         time.Duration
+	replaySpeed            float64
+	replayState            replay.PlaybackState
+	replayIsPipeline       bool
+	replayCurrentStage     int
+	replayPipelineInfo     *replay.PipelineExecution
 
 	// External interfaces
 	agentManager   interface{}
@@ -207,6 +230,10 @@ type StageProgressMsg struct {
 	Output     string
 }
 
+// Replay messages
+type ReplayEventMsg replay.ReplayEvent
+type ReplayTickMsg struct{}
+
 // calculateWrapWidth determines the optimal text wrap width
 // based on terminal width, accounting for borders and padding
 func calculateWrapWidth(terminalWidth int) int {
@@ -247,7 +274,7 @@ func formatNumber(n int) string {
 	return string(result)
 }
 
-func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string) Model {
+func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string, replayEngine *replay.Engine) Model {
 	if modelName == "" {
 		modelName = "auto"
 	}
@@ -271,9 +298,11 @@ func NewModel(agentManager interface{}, sessionManager interface{}, bus interfac
 	vp.SetContent("")
 
 	// Create markdown renderer with dynamic wrap width
+	// Use DarkStyle instead of AutoStyle to avoid terminal escape sequence queries
+	// that can leak into the text input
 	wrapWidth := calculateWrapWidth(80) // Default to 80 until first WindowSizeMsg
 	renderer, _ := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStylePath("dark"),
 		glamour.WithWordWrap(wrapWidth),
 	)
 
@@ -289,6 +318,9 @@ func NewModel(agentManager interface{}, sessionManager interface{}, bus interfac
 		sessionManager: sessionManager,
 		bus:            bus,
 		renderer:       renderer,
+		replayEngine:   replayEngine,
+		replaySpeed:    1.0,
+		replayState:    replay.StateStopped,
 		width:          80,
 		height:         24,
 	}
@@ -318,9 +350,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.commandLine.Width = msg.Width - 6
 
 		// Recreate renderer with new wrap width
+		// Use DarkStyle instead of AutoStyle to avoid terminal escape sequence queries
 		wrapWidth := calculateWrapWidth(msg.Width)
 		m.renderer, _ = glamour.NewTermRenderer(
-			glamour.WithAutoStyle(),
+			glamour.WithStylePath("dark"),
 			glamour.WithWordWrap(wrapWidth),
 		)
 
@@ -339,6 +372,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleTemplateSelectMode(msg)
 		case ModePipelineSelect:
 			return m.handlePipelineSelectMode(msg)
+		case ModeSessionSelect:
+			return m.handleSessionSelectMode(msg)
+		case ModePipelineExecutionSelect:
+			return m.handlePipelineExecutionSelectMode(msg)
+		case ModeReplay:
+			return m.handleReplayMode(msg)
 		}
 
 	case OutputMsg:
@@ -385,6 +424,30 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.updateViewportContent()
 		m.viewport.GotoBottom()
+
+	case ReplayEventMsg:
+		m.replayPosition = msg.Position
+		m.replayDuration = msg.TotalLength
+		m.replayState = msg.State
+		m.replaySpeed = msg.Speed
+		m.replayIsPipeline = msg.IsPipeline
+		m.replayCurrentStage = msg.CurrentStage
+		if msg.PipelineInfo != nil {
+			m.replayPipelineInfo = msg.PipelineInfo
+		}
+		if msg.FullOutput != "" {
+			m.replayOutput = msg.FullOutput
+			m.updateReplayViewportContent()
+		}
+		if msg.TokenUsage.TotalTokens > 0 {
+			m.tokenUsage = msg.TokenUsage
+		}
+		if msg.Type == "playback_complete" {
+			m.replayState = replay.StateStopped
+		}
+
+	case ReplayTickMsg:
+		// Tick for replay mode - handled by playback loop
 	}
 
 	return m, tea.Batch(cmds...)
@@ -393,6 +456,17 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *Model) updateViewportContent() {
 	// Try to render as markdown, fall back to plain text
 	content := m.rawOutput
+	if m.renderer != nil && content != "" {
+		if rendered, err := m.renderer.Render(content); err == nil {
+			content = rendered
+		}
+	}
+	m.viewport.SetContent(content)
+}
+
+func (m *Model) updateReplayViewportContent() {
+	// Try to render replay output as markdown
+	content := m.replayOutput
 	if m.renderer != nil && content != "" {
 		if rendered, err := m.renderer.Render(content); err == nil {
 			content = rendered
@@ -741,6 +815,308 @@ func (m Model) handlePipelineSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) handleSessionSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyRunes:
+		if msg.Type == tea.KeyEsc || (len(msg.Runes) == 1 && msg.Runes[0] == 'q') {
+			m.mode = ModeNormal
+			m.input.Focus()
+			return m, nil
+		}
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'j':
+				if m.sessionCursor < len(m.availableSessions)-1 {
+					m.sessionCursor++
+				}
+			case 'k':
+				if m.sessionCursor > 0 {
+					m.sessionCursor--
+				}
+			}
+		}
+
+	case tea.KeyUp:
+		if m.sessionCursor > 0 {
+			m.sessionCursor--
+		}
+
+	case tea.KeyDown:
+		if m.sessionCursor < len(m.availableSessions)-1 {
+			m.sessionCursor++
+		}
+
+	case tea.KeyEnter:
+		if m.sessionCursor < len(m.availableSessions) && m.replayEngine != nil {
+			session := m.availableSessions[m.sessionCursor]
+			if err := m.replayEngine.LoadSession(session.ID); err != nil {
+				m.rawOutput += fmt.Sprintf("\n**Error loading session:** %v\n", err)
+				m.updateViewportContent()
+				m.mode = ModeNormal
+				m.input.Focus()
+				return m, nil
+			}
+
+			// Enter replay mode
+			m.mode = ModeReplay
+			m.replayOutput = ""
+			m.replayPosition = 0
+			m.replayDuration = m.replayEngine.GetDuration()
+			m.replayState = replay.StateStopped
+
+			// Show session info and initial output
+			loadedSession := m.replayEngine.GetSession()
+			if loadedSession != nil {
+				m.tokenUsage = loadedSession.TokenUsage
+				// Show full output immediately for inspection
+				m.replayOutput = loadedSession.Output
+				m.updateReplayViewportContent()
+			}
+		} else {
+			// No session selected or no replay engine, go back to normal
+			m.mode = ModeNormal
+			m.input.Focus()
+		}
+
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+func (m Model) handlePipelineExecutionSelectMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc, tea.KeyRunes:
+		if msg.Type == tea.KeyEsc || (len(msg.Runes) == 1 && msg.Runes[0] == 'q') {
+			m.mode = ModeNormal
+			m.input.Focus()
+			return m, nil
+		}
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'j':
+				if m.pipelineExecCursor < len(m.availablePipelineExecs)-1 {
+					m.pipelineExecCursor++
+				}
+			case 'k':
+				if m.pipelineExecCursor > 0 {
+					m.pipelineExecCursor--
+				}
+			}
+		}
+
+	case tea.KeyUp:
+		if m.pipelineExecCursor > 0 {
+			m.pipelineExecCursor--
+		}
+
+	case tea.KeyDown:
+		if m.pipelineExecCursor < len(m.availablePipelineExecs)-1 {
+			m.pipelineExecCursor++
+		}
+
+	case tea.KeyEnter:
+		if m.pipelineExecCursor < len(m.availablePipelineExecs) && m.replayEngine != nil {
+			execution := m.availablePipelineExecs[m.pipelineExecCursor]
+			if err := m.replayEngine.LoadPipelineExecution(execution.ID); err != nil {
+				m.rawOutput += fmt.Sprintf("\n**Error loading pipeline execution:** %v\n", err)
+				m.updateViewportContent()
+				m.mode = ModeNormal
+				m.input.Focus()
+				return m, nil
+			}
+
+			// Enter replay mode
+			m.mode = ModeReplay
+			m.replayOutput = ""
+			m.replayPosition = 0
+			m.replayDuration = m.replayEngine.GetDuration()
+			m.replayState = replay.StateStopped
+			m.replayIsPipeline = true
+
+			// Show pipeline info and initial output
+			loadedPipeline := m.replayEngine.GetPipelineExecution()
+			if loadedPipeline != nil {
+				m.tokenUsage = loadedPipeline.TotalTokens
+				m.replayPipelineInfo = loadedPipeline
+				// Build initial output showing pipeline structure
+				var output strings.Builder
+				output.WriteString(fmt.Sprintf("# Pipeline: %s\n\n", loadedPipeline.Pipeline.Name))
+				output.WriteString(fmt.Sprintf("**Status:** %s\n", loadedPipeline.Status))
+				output.WriteString(fmt.Sprintf("**Input:** %s\n\n", loadedPipeline.InitialInput))
+				output.WriteString("## Stages:\n")
+				for i, stage := range loadedPipeline.Stages {
+					statusIcon := "[ ]"
+					switch stage.Status {
+					case "completed":
+						statusIcon = "[OK]"
+					case "failed":
+						statusIcon = "[X]"
+					case "pending":
+						statusIcon = "[ ]"
+					}
+					output.WriteString(fmt.Sprintf("%d. %s %s - %s\n", i+1, statusIcon, stage.Stage.Name, stage.Stage.Description))
+				}
+				output.WriteString("\n*Press SPACE to start playback*\n")
+				m.replayOutput = output.String()
+				m.updateReplayViewportContent()
+			}
+		} else {
+			// No execution selected or no replay engine, go back to normal
+			m.mode = ModeNormal
+			m.input.Focus()
+		}
+
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
+func (m Model) handleReplayMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		// Exit replay mode
+		if m.replayEngine != nil {
+			m.replayEngine.Stop()
+		}
+		m.mode = ModeNormal
+		m.replayOutput = ""
+		m.updateViewportContent()
+		m.input.Focus()
+		return m, nil
+
+	case tea.KeySpace:
+		// Space to play/pause
+		if m.replayEngine != nil {
+			if m.replayState == replay.StatePlaying {
+				m.replayEngine.Pause()
+				m.replayState = replay.StatePaused
+			} else {
+				m.replayEngine.Play()
+				m.replayState = replay.StatePlaying
+			}
+		}
+
+	case tea.KeyRunes:
+		if len(msg.Runes) == 1 {
+			switch msg.Runes[0] {
+			case 'q': // Quit replay mode
+				if m.replayEngine != nil {
+					m.replayEngine.Stop()
+				}
+				m.mode = ModeNormal
+				m.replayOutput = ""
+				m.updateViewportContent()
+				m.input.Focus()
+				return m, nil
+			case ' ': // Space to play/pause (fallback)
+				if m.replayEngine != nil {
+					if m.replayState == replay.StatePlaying {
+						m.replayEngine.Pause()
+						m.replayState = replay.StatePaused
+					} else {
+						m.replayEngine.Play()
+						m.replayState = replay.StatePlaying
+					}
+				}
+			case '+', '=': // Increase speed
+				if m.replayEngine != nil {
+					newSpeed := m.replaySpeed * 2
+					if newSpeed > 10 {
+						newSpeed = 10
+					}
+					m.replayEngine.SetSpeed(newSpeed)
+					m.replaySpeed = newSpeed
+				}
+			case '-', '_': // Decrease speed
+				if m.replayEngine != nil {
+					newSpeed := m.replaySpeed / 2
+					if newSpeed < 0.1 {
+						newSpeed = 0.1
+					}
+					m.replayEngine.SetSpeed(newSpeed)
+					m.replaySpeed = newSpeed
+				}
+			case '0': // Reset to beginning
+				if m.replayEngine != nil {
+					m.replayEngine.Seek(0)
+				}
+			case 'r': // Restart playback
+				if m.replayEngine != nil {
+					m.replayEngine.Stop()
+					m.replayEngine.Seek(0)
+					m.replayEngine.Play()
+					m.replayState = replay.StatePlaying
+				}
+			case 'j': // Scroll down
+				m.viewport.LineDown(1)
+			case 'k': // Scroll up
+				m.viewport.LineUp(1)
+			case 'g': // Go to top
+				m.viewport.GotoTop()
+			case 'G': // Go to bottom
+				m.viewport.GotoBottom()
+			}
+		}
+
+	case tea.KeyUp:
+		// Scroll up
+		m.viewport.LineUp(1)
+
+	case tea.KeyDown:
+		// Scroll down
+		m.viewport.LineDown(1)
+
+	case tea.KeyPgUp:
+		// Page up
+		m.viewport.ViewUp()
+
+	case tea.KeyPgDown:
+		// Page down
+		m.viewport.ViewDown()
+
+	case tea.KeyLeft:
+		// Seek backward 5 seconds
+		if m.replayEngine != nil {
+			newPos := m.replayPosition - 5*time.Second
+			if newPos < 0 {
+				newPos = 0
+			}
+			m.replayEngine.Seek(newPos)
+		}
+
+	case tea.KeyRight:
+		// Seek forward 5 seconds
+		if m.replayEngine != nil {
+			newPos := m.replayPosition + 5*time.Second
+			if newPos > m.replayDuration {
+				newPos = m.replayDuration
+			}
+			m.replayEngine.Seek(newPos)
+		}
+
+	case tea.KeyHome:
+		// Go to beginning
+		if m.replayEngine != nil {
+			m.replayEngine.Seek(0)
+		}
+
+	case tea.KeyEnd:
+		// Go to end
+		if m.replayEngine != nil {
+			m.replayEngine.Seek(m.replayDuration)
+		}
+
+	case tea.KeyCtrlC:
+		return m, tea.Quit
+	}
+
+	return m, nil
+}
+
 func (m Model) executeCommand(cmdStr string) Model {
 	parts := strings.Fields(cmdStr)
 	if len(parts) == 0 {
@@ -944,6 +1320,105 @@ func (m Model) executeCommand(cmdStr string) Model {
 			m.updateViewportContent()
 		}
 
+	case "sessions":
+		if m.replayEngine == nil {
+			m.rawOutput += "\n**Error:** Replay engine not available\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		sessions, err := m.replayEngine.ListSessions()
+		if err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error listing sessions:** %v\n", err)
+			m.updateViewportContent()
+			return m
+		}
+
+		if len(sessions) == 0 {
+			m.rawOutput += "\n**No sessions found** in `sessions/` directory\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		m.availableSessions = sessions
+		m.sessionCursor = 0
+		m.mode = ModeSessionSelect
+
+	case "pipeline-executions":
+		if m.replayEngine == nil {
+			m.rawOutput += "\n**Error:** Replay engine not available\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		executions, err := m.replayEngine.ListPipelineExecutions()
+		if err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error listing pipeline executions:** %v\n", err)
+			m.updateViewportContent()
+			return m
+		}
+
+		if len(executions) == 0 {
+			m.rawOutput += "\n**No pipeline executions found** in `pipeline-executions/` directory\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		m.availablePipelineExecs = executions
+		m.pipelineExecCursor = 0
+		m.mode = ModePipelineExecutionSelect
+
+	case "replay":
+		if m.replayEngine == nil {
+			m.rawOutput += "\n**Error:** Replay engine not available\n"
+			m.updateViewportContent()
+			return m
+		}
+
+		if len(args) > 0 {
+			// Replay specific session by ID
+			sessionID := args[0]
+			if err := m.replayEngine.LoadSession(sessionID); err != nil {
+				m.rawOutput += fmt.Sprintf("\n**Error loading session:** %v\n", err)
+				m.updateViewportContent()
+				return m
+			}
+
+			// Enter replay mode
+			m.mode = ModeReplay
+			m.replayOutput = ""
+			m.replayPosition = 0
+			m.replayDuration = m.replayEngine.GetDuration()
+			m.replayState = replay.StateStopped
+
+			// Show session info
+			loadedSession := m.replayEngine.GetSession()
+			if loadedSession != nil {
+				m.tokenUsage = loadedSession.TokenUsage
+			}
+
+			m.viewport.SetContent(fmt.Sprintf("Session loaded: %s\nDuration: %s\n\nPress SPACE to play, q/Esc to exit replay mode",
+				sessionID, replay.FormatDuration(m.replayDuration)))
+		} else {
+			// Show sessions list
+			sessions, err := m.replayEngine.ListSessions()
+			if err != nil {
+				m.rawOutput += fmt.Sprintf("\n**Error listing sessions:** %v\n", err)
+				m.updateViewportContent()
+				return m
+			}
+
+			if len(sessions) == 0 {
+				m.rawOutput += "\n**No sessions found** in `sessions/` directory\n"
+				m.updateViewportContent()
+				return m
+			}
+
+			m.availableSessions = sessions
+			m.sessionCursor = 0
+			m.mode = ModeSessionSelect
+		}
+
 	case "clear":
 		m.rawOutput = ""
 		m.viewport.SetContent("")
@@ -965,6 +1440,9 @@ func (m Model) executeCommand(cmdStr string) Model {
 | **:pipelines** | List/select pipelines |
 | **:run-pipeline** <n> | Run a pipeline |
 | **:pipeline-status** | Show pipeline progress |
+| **:sessions** | List/select sessions to replay |
+| **:pipeline-executions** | List/replay pipeline runs |
+| **:replay** [id] | Replay a session |
 | **:clear** | Clear output |
 | **:help** | Show this help |
 | **:quit** | Exit application |
@@ -975,6 +1453,19 @@ func (m Model) executeCommand(cmdStr string) Model {
 - **Tab** - Accept autocomplete
 - **Esc** - Cancel current mode
 - **Ctrl+C** - Quit
+
+## Replay Mode Shortcuts
+
+- **Space** - Play/Pause
+- **j/k or Up/Down** - Scroll content
+- **PgUp/PgDown** - Page scroll
+- **g/G** - Go to top/bottom of content
+- **Left/Right** - Seek 5 seconds in timeline
+- **Home/End** - Go to beginning/end of timeline
+- **+/-** - Increase/decrease playback speed
+- **0** - Go to beginning of timeline
+- **r** - Restart playback
+- **q/Esc** - Exit replay mode
 
 `
 		m.updateViewportContent()
@@ -1006,6 +1497,12 @@ func (m Model) View() string {
 		sections = append(sections, m.renderTemplateSelect())
 	case ModePipelineSelect:
 		sections = append(sections, m.renderPipelineSelect())
+	case ModeSessionSelect:
+		sections = append(sections, m.renderSessionSelect())
+	case ModePipelineExecutionSelect:
+		sections = append(sections, m.renderPipelineExecutionSelect())
+	case ModeReplay:
+		sections = append(sections, m.renderReplayView())
 	default:
 		sections = append(sections, m.renderOutput())
 		sections = append(sections, m.renderInput())
@@ -1020,13 +1517,29 @@ func (m Model) View() string {
 func (m Model) renderHeader() string {
 	// Status badge
 	var statusBadge string
-	switch m.state {
-	case "running":
-		statusBadge = statusRunning.Render(" RUNNING ")
-	case "paused":
-		statusBadge = statusPaused.Render(" PAUSED ")
-	default:
-		statusBadge = statusIdle.Render(" IDLE ")
+	if m.mode == ModeReplay {
+		// Show replay-specific status
+		replayType := "REPLAY"
+		if m.replayIsPipeline {
+			replayType = "PIPELINE"
+		}
+		switch m.replayState {
+		case replay.StatePlaying:
+			statusBadge = statusRunning.Render(fmt.Sprintf(" %s >> ", replayType))
+		case replay.StatePaused:
+			statusBadge = statusPaused.Render(fmt.Sprintf(" %s || ", replayType))
+		default:
+			statusBadge = statusIdle.Render(fmt.Sprintf(" %s ", replayType))
+		}
+	} else {
+		switch m.state {
+		case "running":
+			statusBadge = statusRunning.Render(" RUNNING ")
+		case "paused":
+			statusBadge = statusPaused.Render(" PAUSED ")
+		default:
+			statusBadge = statusIdle.Render(" IDLE ")
+		}
 	}
 
 	// Agent info
@@ -1260,6 +1773,150 @@ func (m Model) renderPipelineSelect() string {
 		Render(content.String())
 }
 
+func (m Model) renderSessionSelect() string {
+	var content strings.Builder
+
+	content.WriteString(titleStyle.Render("Select Session to Replay") + "\n\n")
+
+	visibleHeight := m.height - 10
+	if visibleHeight < 5 {
+		visibleHeight = 5
+	}
+
+	startIdx := max(0, m.sessionCursor-visibleHeight/2)
+	endIdx := min(startIdx+visibleHeight, len(m.availableSessions))
+
+	for i := startIdx; i < endIdx; i++ {
+		session := m.availableSessions[i]
+		// Format session info
+		duration := ""
+		if session.EndTime != nil {
+			d := session.EndTime.Sub(session.StartTime)
+			duration = replay.FormatDuration(d)
+		}
+		sessionInfo := fmt.Sprintf("%s | %s | %s", session.ID, session.StartTime.Format("2006-01-02 15:04"), duration)
+
+		if i == m.sessionCursor {
+			content.WriteString(listSelectedStyle.Render(sessionInfo) + "\n")
+		} else {
+			content.WriteString(listItemStyle.Render(sessionInfo) + "\n")
+		}
+	}
+
+	content.WriteString(fmt.Sprintf("\n%s", helpStyle.Render(fmt.Sprintf("[%d/%d] j/k:navigate Enter:select q/Esc:cancel", m.sessionCursor+1, len(m.availableSessions)))))
+
+	return borderStyle.
+		Width(m.width - 2).
+		Height(m.height - 6).
+		Render(content.String())
+}
+
+func (m Model) renderPipelineExecutionSelect() string {
+	var content strings.Builder
+
+	content.WriteString(titleStyle.Render("Select Pipeline Execution to Replay") + "\n\n")
+
+	visibleHeight := m.height - 10
+	if visibleHeight < 5 {
+		visibleHeight = 5
+	}
+
+	startIdx := max(0, m.pipelineExecCursor-visibleHeight/2)
+	endIdx := min(startIdx+visibleHeight, len(m.availablePipelineExecs))
+
+	for i := startIdx; i < endIdx; i++ {
+		exec := m.availablePipelineExecs[i]
+		// Format execution info
+		duration := exec.EndTime.Sub(exec.StartTime)
+		statusIcon := "[OK]"
+		switch exec.Status {
+		case "failed":
+			statusIcon = "[X]"
+		case "running":
+			statusIcon = "[>]"
+		case "cancelled":
+			statusIcon = "[-]"
+		}
+		execInfo := fmt.Sprintf("%s %s | %s | %s | %d stages",
+			statusIcon,
+			exec.Pipeline.Name,
+			exec.StartTime.Format("2006-01-02 15:04"),
+			replay.FormatDuration(duration),
+			len(exec.Stages))
+
+		if i == m.pipelineExecCursor {
+			content.WriteString(listSelectedStyle.Render(execInfo) + "\n")
+		} else {
+			content.WriteString(listItemStyle.Render(execInfo) + "\n")
+		}
+	}
+
+	content.WriteString(fmt.Sprintf("\n%s", helpStyle.Render(fmt.Sprintf("[%d/%d] j/k:navigate Enter:select q/Esc:cancel", m.pipelineExecCursor+1, len(m.availablePipelineExecs)))))
+
+	return borderStyle.
+		Width(m.width - 2).
+		Height(m.height - 6).
+		Render(content.String())
+}
+
+func (m Model) renderReplayView() string {
+	var content strings.Builder
+
+	// Progress bar
+	progress := float64(0)
+	if m.replayDuration > 0 {
+		progress = float64(m.replayPosition) / float64(m.replayDuration)
+	}
+	if progress > 1 {
+		progress = 1
+	}
+
+	// State indicator
+	stateIcon := "||" // Stopped
+	switch m.replayState {
+	case replay.StatePlaying:
+		stateIcon = ">>"
+	case replay.StatePaused:
+		stateIcon = "||"
+	}
+
+	// Progress bar rendering
+	barWidth := m.width - 30
+	if barWidth < 20 {
+		barWidth = 20
+	}
+	filled := int(float64(barWidth) * progress)
+	if filled > barWidth {
+		filled = barWidth
+	}
+	empty := barWidth - filled
+
+	progressBar := fmt.Sprintf("[%s] %s %s [%s%s] %sx",
+		stateIcon,
+		replay.FormatDuration(m.replayPosition),
+		replay.FormatDuration(m.replayDuration),
+		strings.Repeat("=", filled),
+		strings.Repeat("-", empty),
+		fmt.Sprintf("%.1f", m.replaySpeed),
+	)
+
+	// Render the timeline bar at the top
+	timelineStyle := lipgloss.NewStyle().
+		Foreground(primaryColor).
+		Bold(true)
+
+	content.WriteString(timelineStyle.Render(progressBar) + "\n\n")
+
+	// Main content is the viewport
+	outputContent := m.viewport.View()
+	content.WriteString(outputContent)
+
+	return borderStyle.
+		Width(m.width - 2).
+		Height(m.viewport.Height + 4).
+		Render(content.String())
+}
+
 func (m Model) renderHelp() string {
 	var help string
 	switch m.mode {
@@ -1267,6 +1924,10 @@ func (m Model) renderHelp() string {
 		help = "Tab:complete | Up/Down:suggestions | Enter:execute | Esc:cancel"
 	case ModeModelSelect, ModeTemplateSelect, ModePipelineSelect:
 		help = "j/k:navigate | Enter:select | q/Esc:cancel"
+	case ModeSessionSelect, ModePipelineExecutionSelect:
+		help = "j/k:navigate | Enter:replay | q/Esc:cancel"
+	case ModeReplay:
+		help = "Space:play/pause | j/k:scroll | Left/Right:seek | +/-:speed | r:restart | q:exit"
 	default:
 		if m.pendingPipeline != "" {
 			help = fmt.Sprintf("Enter input for pipeline [%s] | Esc:cancel", m.pendingPipeline)
