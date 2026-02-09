@@ -13,6 +13,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/rasmuselmersson/opencode/pkg/agent"
+	"github.com/rasmuselmersson/opencode/pkg/pane"
 	"github.com/rasmuselmersson/opencode/pkg/replay"
 )
 
@@ -32,6 +33,12 @@ var commands = []string{
 	"sessions",
 	"pipeline-executions",
 	"replay",
+	"split-h",
+	"split-v",
+	"close-pane",
+	"focus-next",
+	"focus-prev",
+	"resize-pane",
 	"clear",
 	"help",
 	"quit",
@@ -119,6 +126,9 @@ type Model struct {
 	agentManager   interface{}
 	sessionManager interface{}
 	bus            interface{}
+
+	// Pane manager
+	paneManager *pane.Manager
 
 	// Markdown renderer
 	renderer *glamour.TermRenderer
@@ -274,7 +284,7 @@ func formatNumber(n int) string {
 	return string(result)
 }
 
-func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string, replayEngine *replay.Engine) Model {
+func NewModel(agentManager interface{}, sessionManager interface{}, bus interface{}, modelName string, replayEngine *replay.Engine, paneManager *pane.Manager) Model {
 	if modelName == "" {
 		modelName = "auto"
 	}
@@ -317,6 +327,7 @@ func NewModel(agentManager interface{}, sessionManager interface{}, bus interfac
 		agentManager:   agentManager,
 		sessionManager: sessionManager,
 		bus:            bus,
+		paneManager:    paneManager,
 		renderer:       renderer,
 		replayEngine:   replayEngine,
 		replaySpeed:    1.0,
@@ -348,6 +359,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Update input widths
 		m.input.Width = msg.Width - 6
 		m.commandLine.Width = msg.Width - 6
+
+		// Update pane manager dimensions
+		if m.paneManager != nil {
+			m.paneManager.SetDimensions(msg.Width-4, m.viewport.Height)
+		}
 
 		// Recreate renderer with new wrap width
 		// Use DarkStyle instead of AutoStyle to avoid terminal escape sequence queries
@@ -381,9 +397,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case OutputMsg:
-		m.rawOutput += string(msg)
-		m.updateViewportContent()
-		m.viewport.GotoBottom()
+		// Route output to the appropriate pane
+		if m.paneManager != nil && m.paneManager.CountPanes() > 1 {
+			// Multiple panes: append to focused pane only
+			if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+				focusedPane.AppendContent(string(msg))
+			}
+		} else {
+			// Single pane mode: use global output
+			m.rawOutput += string(msg)
+			m.updateViewportContent()
+			m.viewport.GotoBottom()
+			// Also sync to pane if it exists
+			if m.paneManager != nil {
+				if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+					focusedPane.SetContent(m.rawOutput)
+				}
+			}
+		}
 
 	case StateMsg:
 		m.state = string(msg)
@@ -462,6 +493,14 @@ func (m *Model) updateViewportContent() {
 		}
 	}
 	m.viewport.SetContent(content)
+
+	// Only sync to pane in single-pane mode
+	// In multi-pane mode, each pane maintains its own content
+	if m.paneManager != nil && m.paneManager.CountPanes() == 1 {
+		if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+			focusedPane.SetContent(m.rawOutput)
+		}
+	}
 }
 
 func (m *Model) updateReplayViewportContent() {
@@ -530,9 +569,16 @@ func (m Model) handleNormalMode(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				m.pendingTemplate = ""
 				m.input.Placeholder = "Type your message..."
 			} else {
-				// Normal message
-				m.rawOutput += fmt.Sprintf("\n**You:** %s\n\n", value)
-				m.updateViewportContent()
+				// Normal message - route to focused pane if multiple panes exist
+				userMsg := fmt.Sprintf("\n**You:** %s\n\n", value)
+				if m.paneManager != nil && m.paneManager.CountPanes() > 1 {
+					if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+						focusedPane.AppendContent(userMsg)
+					}
+				} else {
+					m.rawOutput += userMsg
+					m.updateViewportContent()
+				}
 
 				if sm, ok := m.sessionManager.(interface{ StartSession(string, string) }); ok {
 					sm.StartSession(m.agentName, value)
@@ -1419,6 +1465,135 @@ func (m Model) executeCommand(cmdStr string) Model {
 			m.mode = ModeSessionSelect
 		}
 
+	case "split-h":
+		// Split focused pane horizontally
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		agentName := m.agentName
+		if len(args) > 0 {
+			agentName = args[0]
+		}
+		// Ensure layout has dimensions
+		m.paneManager.SetDimensions(m.width-4, m.viewport.Height)
+		// Save current output to the focused pane before split
+		if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+			focusedPane.SetContent(m.rawOutput)
+		}
+		focusedID := m.paneManager.GetFocusedPaneID()
+		if newPane, err := m.paneManager.SplitHorizontal(focusedID, agentName); err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+			m.updateViewportContent()
+		} else {
+			// New pane starts with empty content
+			newPane.SetContent(fmt.Sprintf("**New pane** (agent: %s)\n", agentName))
+			// Add message to original pane
+			if focusedPane := m.paneManager.GetPane(focusedID); focusedPane != nil {
+				focusedPane.AppendContent(fmt.Sprintf("\n**Split pane horizontally** (total panes: %d)\n", m.paneManager.CountPanes()))
+			}
+		}
+
+	case "split-v":
+		// Split focused pane vertically
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		agentName := m.agentName
+		if len(args) > 0 {
+			agentName = args[0]
+		}
+		// Ensure layout has dimensions
+		m.paneManager.SetDimensions(m.width-4, m.viewport.Height)
+		// Save current output to the focused pane before split
+		if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+			focusedPane.SetContent(m.rawOutput)
+		}
+		focusedID := m.paneManager.GetFocusedPaneID()
+		if newPane, err := m.paneManager.SplitVertical(focusedID, agentName); err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+			m.updateViewportContent()
+		} else {
+			// New pane starts with empty content
+			newPane.SetContent(fmt.Sprintf("**New pane** (agent: %s)\n", agentName))
+			// Add message to original pane
+			if focusedPane := m.paneManager.GetPane(focusedID); focusedPane != nil {
+				focusedPane.AppendContent(fmt.Sprintf("\n**Split pane vertically** (total panes: %d)\n", m.paneManager.CountPanes()))
+			}
+		}
+
+	case "close-pane":
+		// Close focused pane
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		focusedID := m.paneManager.GetFocusedPaneID()
+		if err := m.paneManager.ClosePane(focusedID); err != nil {
+			if m.paneManager.CountPanes() > 1 {
+				if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+					focusedPane.AppendContent(fmt.Sprintf("\n**Error:** %v\n", err))
+				}
+			} else {
+				m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+				m.updateViewportContent()
+			}
+		}
+		// If we're back to single pane, sync its content to rawOutput
+		if m.paneManager.CountPanes() == 1 {
+			if focusedPane := m.paneManager.GetFocusedPane(); focusedPane != nil {
+				m.rawOutput = focusedPane.GetContent()
+				m.updateViewportContent()
+			}
+		}
+
+	case "focus-next":
+		// Focus next pane
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		if err := m.paneManager.FocusNext(); err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+		}
+		m.updateViewportContent()
+
+	case "focus-prev":
+		// Focus previous pane
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		if err := m.paneManager.FocusPrev(); err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+		}
+		m.updateViewportContent()
+
+	case "resize-pane":
+		// Resize focused pane
+		if m.paneManager == nil {
+			m.rawOutput += "\n**Error:** Pane manager not available\n"
+			m.updateViewportContent()
+			return m
+		}
+		delta := 0.05
+		if len(args) > 0 {
+			if args[0] == "-" || args[0] == "smaller" {
+				delta = -0.05
+			}
+		}
+		focusedID := m.paneManager.GetFocusedPaneID()
+		if err := m.paneManager.ResizePane(focusedID, delta); err != nil {
+			m.rawOutput += fmt.Sprintf("\n**Error:** %v\n", err)
+		}
+		m.updateViewportContent()
+
 	case "clear":
 		m.rawOutput = ""
 		m.viewport.SetContent("")
@@ -1443,6 +1618,12 @@ func (m Model) executeCommand(cmdStr string) Model {
 | **:sessions** | List/select sessions to replay |
 | **:pipeline-executions** | List/replay pipeline runs |
 | **:replay** [id] | Replay a session |
+| **:split-h** [agent] | Split pane horizontally |
+| **:split-v** [agent] | Split pane vertically |
+| **:close-pane** | Close focused pane |
+| **:focus-next** | Focus next pane |
+| **:focus-prev** | Focus previous pane |
+| **:resize-pane** [+/-] | Resize focused pane |
 | **:clear** | Clear output |
 | **:help** | Show this help |
 | **:quit** | Exit application |
@@ -1453,6 +1634,9 @@ func (m Model) executeCommand(cmdStr string) Model {
 - **Tab** - Accept autocomplete
 - **Esc** - Cancel current mode
 - **Ctrl+C** - Quit
+- **Ctrl+W h/v** - Split pane horizontal/vertical
+- **Ctrl+W w** - Focus next pane
+- **Ctrl+W q** - Close pane
 
 ## Replay Mode Shortcuts
 
@@ -1504,7 +1688,12 @@ func (m Model) View() string {
 	case ModeReplay:
 		sections = append(sections, m.renderReplayView())
 	default:
-		sections = append(sections, m.renderOutput())
+		// Render panes if multiple exist, otherwise single output
+		if m.paneManager != nil && m.paneManager.CountPanes() > 1 {
+			sections = append(sections, m.renderPanes())
+		} else {
+			sections = append(sections, m.renderOutput())
+		}
 		sections = append(sections, m.renderInput())
 	}
 
@@ -1595,8 +1784,19 @@ func (m Model) renderHeader() string {
 		remoteInfo = remoteStyle.Render(" " + statusText + " ")
 	}
 
+	// Pane info (if multiple panes)
+	var paneInfo string
+	if m.paneManager != nil && m.paneManager.CountPanes() > 1 {
+		paneInfo = lipgloss.NewStyle().
+			Foreground(accentColor).
+			Render(fmt.Sprintf(" [%d panes] ", m.paneManager.CountPanes()))
+	}
+
 	// Build header line
 	left := lipgloss.JoinHorizontal(lipgloss.Center, agentInfo, " ", statusBadge, modelInfo)
+	if paneInfo != "" {
+		left = lipgloss.JoinHorizontal(lipgloss.Center, left, paneInfo)
+	}
 	if remoteInfo != "" {
 		left = lipgloss.JoinHorizontal(lipgloss.Center, left, " ", remoteInfo)
 	}
@@ -1622,6 +1822,170 @@ func (m Model) renderOutput() string {
 		Render(m.viewport.View())
 
 	return outputBox
+}
+
+// renderPanes renders multiple panes side by side or stacked
+func (m Model) renderPanes() string {
+	if m.paneManager == nil {
+		return m.renderOutput()
+	}
+
+	layout := m.paneManager.GetLayout()
+	if layout == nil {
+		return m.renderOutput()
+	}
+
+	// Ensure layout has dimensions - use fallback if not set
+	if layout.Width == 0 || layout.Height == 0 {
+		layout.SetDimensions(m.width-4, m.viewport.Height)
+	}
+
+	// Get pane rectangles
+	rects := layout.CalculateLayout()
+	if len(rects) == 0 {
+		return m.renderOutput()
+	}
+
+	// Build pane views based on layout direction
+	focusedPaneID := m.paneManager.GetFocusedPaneID()
+
+	// Get the root node to determine layout direction
+	root := layout.Root
+	if root == nil {
+		return m.renderOutput()
+	}
+
+	// Render based on root direction
+	return m.renderLayoutNode(root, rects, focusedPaneID)
+}
+
+// renderLayoutNode recursively renders a layout node
+func (m Model) renderLayoutNode(node *pane.LayoutNode, rects map[string]pane.Rect, focusedPaneID string) string {
+	if node.IsLeaf() {
+		// Render a single pane
+		p := m.paneManager.GetPane(node.PaneID)
+		if p == nil {
+			return ""
+		}
+		rect, ok := rects[node.PaneID]
+		if !ok {
+			rect = pane.Rect{Width: m.width - 4, Height: m.viewport.Height}
+		}
+		return m.renderSinglePane(p, rect, p.ID == focusedPaneID)
+	}
+
+	// Render children
+	var childViews []string
+	for _, child := range node.Children {
+		childView := m.renderLayoutNode(child, rects, focusedPaneID)
+		childViews = append(childViews, childView)
+	}
+
+	if len(childViews) == 0 {
+		return ""
+	}
+
+	// Join based on direction
+	if node.Direction == pane.SplitHorizontal {
+		return lipgloss.JoinHorizontal(lipgloss.Top, childViews...)
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, childViews...)
+}
+
+// renderSinglePane renders a single pane with border
+func (m Model) renderSinglePane(p *pane.Pane, rect pane.Rect, focused bool) string {
+	// Ensure minimum dimensions
+	width := rect.Width
+	height := rect.Height
+	if width < 10 {
+		width = m.width / 2
+		if width < 20 {
+			width = 20
+		}
+	}
+	if height < 5 {
+		height = m.viewport.Height / 2
+		if height < 5 {
+			height = 5
+		}
+	}
+
+	// Choose border color based on focus
+	borderColor := mutedColor
+	if focused {
+		borderColor = primaryColor
+	}
+
+	// Build pane title
+	title := p.GetTitle()
+	if title == "" {
+		title = p.ID
+	}
+
+	// Build state indicator
+	stateIndicator := ""
+	switch p.GetState() {
+	case "running":
+		stateIndicator = " [>] "
+	case "paused":
+		stateIndicator = " [||] "
+	default:
+		stateIndicator = " "
+	}
+
+	// Render pane content (using the raw content for now)
+	content := p.GetContent()
+	if m.renderer != nil && content != "" {
+		if rendered, err := m.renderer.Render(content); err == nil {
+			content = rendered
+		}
+	}
+
+	// Truncate content to fit pane
+	lines := strings.Split(content, "\n")
+	maxLines := height - 4 // Account for border and header
+	if maxLines < 1 {
+		maxLines = 1
+	}
+	if len(lines) > maxLines {
+		scrollPos := p.GetScrollPos()
+		endPos := scrollPos + maxLines
+		if endPos > len(lines) {
+			endPos = len(lines)
+			scrollPos = endPos - maxLines
+			if scrollPos < 0 {
+				scrollPos = 0
+			}
+		}
+		lines = lines[scrollPos:endPos]
+	}
+	content = strings.Join(lines, "\n")
+
+	// Build header
+	headerText := fmt.Sprintf("%s%s", title, stateIndicator)
+
+	// Calculate content width accounting for border (2) and padding (2)
+	// Total rendered width should equal rect.Width
+	contentWidth := width - 4 // 2 for border + 2 for padding (0, 1 means 1 left + 1 right)
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+
+	paneStyle := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(borderColor).
+		Width(contentWidth).
+		Height(height).
+		Padding(0, 1)
+
+	headerStyle := lipgloss.NewStyle().
+		Foreground(borderColor).
+		Bold(focused)
+
+	header := headerStyle.Render(headerText)
+	body := content
+
+	return paneStyle.Render(header + "\n" + body)
 }
 
 func (m Model) renderInput() string {

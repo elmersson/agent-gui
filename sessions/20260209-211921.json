@@ -1,0 +1,16 @@
+{
+  "id": "20260209-211921",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "Hi! I'm OpenCode, ready to help you with your coding tasks. How can I assist you today?",
+  "start_time": "2026-02-09T21:19:21.981203+01:00",
+  "end_time": "2026-02-09T21:19:24.634229+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 26,
+    "cache_write": 11687,
+    "total_tokens": 28,
+    "cost_usd": 0.04422225
+  }
+}

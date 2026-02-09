@@ -1,0 +1,16 @@
+{
+  "id": "20260209-212527",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "Hi! I'm OpenCode, an AI coding assistant. I'm here to help you with software engineering tasks like writing code, debugging, refactoring, explaining code, and more.\n\nI can see you're in the `agent-gui` project directory. How can I help you today?",
+  "start_time": "2026-02-09T21:25:27.985267+01:00",
+  "end_time": "2026-02-09T21:25:31.569168+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 64,
+    "cache_write": 11697,
+    "total_tokens": 66,
+    "cost_usd": 0.04482975
+  }
+}

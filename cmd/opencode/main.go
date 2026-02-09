@@ -10,6 +10,7 @@ import (
 	"github.com/rasmuselmersson/opencode/pkg/agent"
 	"github.com/rasmuselmersson/opencode/pkg/events"
 	"github.com/rasmuselmersson/opencode/pkg/manager"
+	"github.com/rasmuselmersson/opencode/pkg/pane"
 	"github.com/rasmuselmersson/opencode/pkg/remote"
 	"github.com/rasmuselmersson/opencode/pkg/replay"
 	"github.com/rasmuselmersson/opencode/pkg/session"
@@ -61,7 +62,11 @@ func main() {
 	// Create replay engine for session replay functionality
 	replayEngine := replay.NewEngine("sessions")
 
-	model := tui.NewModel(agentManager, sessionManager, bus, "auto", replayEngine)
+	// Create pane manager for multi-pane layout
+	paneManager := pane.NewManager(bus)
+	paneManager.Initialize("opencode")
+
+	model := tui.NewModel(agentManager, sessionManager, bus, "auto", replayEngine, paneManager)
 
 	// Note: replay observer will be set up after program is created
 

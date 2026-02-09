@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os/exec"
+	"strings"
 
 	"github.com/rasmuselmersson/opencode/pkg/agent"
 	"github.com/rasmuselmersson/opencode/pkg/tokenizer"
@@ -16,6 +17,8 @@ type OpenCodeAdapter struct {
 	tokenizer *tokenizer.Tokenizer
 	// TokenUsageChan emits token usage updates during streaming
 	TokenUsageChan chan agent.TokenUsage
+	// Conversation history for maintaining context
+	history []agent.Message
 }
 
 type OpenCodeEvent struct {
@@ -50,7 +53,18 @@ func NewClaudeAdapter(config agent.Config) *OpenCodeAdapter {
 		model:          config.Model,
 		tokenizer:      tokenizer.NewTokenizer(),
 		TokenUsageChan: make(chan agent.TokenUsage, 100),
+		history:        make([]agent.Message, 0),
 	}
+}
+
+// ClearHistory clears the conversation history
+func (a *OpenCodeAdapter) ClearHistory() {
+	a.history = make([]agent.Message, 0)
+}
+
+// GetHistory returns the current conversation history
+func (a *OpenCodeAdapter) GetHistory() []agent.Message {
+	return a.history
 }
 
 func (a *OpenCodeAdapter) Name() string {
@@ -63,16 +77,35 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 	// Create a new token channel for this execution
 	a.TokenUsageChan = make(chan agent.TokenUsage, 100)
 
+	// Add user message to history
+	a.history = append(a.history, agent.Message{Role: "user", Content: input})
+
 	go func() {
 		defer close(outputCh)
 		defer close(errCh)
 		defer close(a.TokenUsageChan)
 
+		// Build full prompt with conversation history
+		var fullPrompt string
+		if len(a.history) > 1 {
+			fullPrompt = "Continue the conversation. Here is the history:\n\n"
+			for _, msg := range a.history[:len(a.history)-1] {
+				if msg.Role == "user" {
+					fullPrompt += "User: " + msg.Content + "\n\n"
+				} else {
+					fullPrompt += "Assistant: " + msg.Content + "\n\n"
+				}
+			}
+			fullPrompt += "User: " + input + "\n\nPlease respond to the latest user message while considering the conversation context above."
+		} else {
+			fullPrompt = input
+		}
+
 		args := []string{"run", "--format", "json"}
 		if a.model != "" {
 			args = append(args, "--model", a.model)
 		}
-		args = append(args, input)
+		args = append(args, fullPrompt)
 
 		cmd := exec.CommandContext(ctx, "opencode", args...)
 		stdout, err := cmd.StdoutPipe()
@@ -112,6 +145,7 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 		// Track token usage - use estimates during streaming, real values at step_finish
 		var usage agent.TokenUsage
 		var estimatedOutputTokens int
+		var fullResponse strings.Builder
 
 		scanner := bufio.NewScanner(stdout)
 		// Increase buffer size to handle large JSON responses (default is 64KB, increase to 10MB)
@@ -132,6 +166,9 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 				if err := json.Unmarshal(event.Part, &part); err != nil {
 					continue
 				}
+
+				// Collect full response for history
+				fullResponse.WriteString(part.Text)
 
 				// Estimate tokens during streaming for live updates
 				chunkTokens := a.tokenizer.CountTokens(part.Text)
@@ -173,6 +210,11 @@ func (a *OpenCodeAdapter) Execute(ctx context.Context, input string) (<-chan str
 				default:
 				}
 			}
+		}
+
+		// Add assistant response to history
+		if resp := fullResponse.String(); resp != "" {
+			a.history = append(a.history, agent.Message{Role: "assistant", Content: resp})
 		}
 
 		if err := scanner.Err(); err != nil {

@@ -1,0 +1,17 @@
+{
+  "id": "20260209-212822",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "I'm OpenCode, a coding agent designed to help you with software engineering tasks. I can assist you with:\n\n- Writing and editing code\n- Debugging and fixing issues\n- Refactoring and improving code quality\n- Exploring and understanding codebases\n- Running tests and builds\n- Git operations\n- And much more\n\nI see you're working in a Go project that appears to be an agent GUI system with support for pipelines, remote agents, and token management.\n\nHow can I help you today?",
+  "start_time": "2026-02-09T21:28:22.686248+01:00",
+  "end_time": "2026-02-09T21:28:27.796681+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 112,
+    "cache_read": 10225,
+    "cache_write": 1505,
+    "total_tokens": 10339,
+    "cost_usd": 0.01039725
+  }
+}
