@@ -34,6 +34,16 @@ const (
 	EventRemoteDisconnected EventType = "remote.disconnected"
 	EventRemoteReconnecting EventType = "remote.reconnecting"
 	EventRemoteFailed       EventType = "remote.failed"
+
+	// Pane layout events
+	EventPaneCreated    EventType = "pane.created"
+	EventPaneClosed     EventType = "pane.closed"
+	EventPaneSplit      EventType = "pane.split"
+	EventPaneFocused    EventType = "pane.focused"
+	EventPaneResized    EventType = "pane.resized"
+	EventPaneBound      EventType = "pane.bound"
+	EventLayoutChanged  EventType = "layout.changed"
+	EventLayoutRestored EventType = "layout.restored"
 )
 
 type Event struct {

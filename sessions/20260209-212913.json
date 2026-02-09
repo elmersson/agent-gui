@@ -1,0 +1,17 @@
+{
+  "id": "20260209-212913",
+  "agent_name": "opencode",
+  "input": "",
+  "output": "I need more context to answer your question. What are you referring to? \n\nAre you asking about:\n- The name of this project/repository (which appears to be \"agent-gui\")?\n- A specific component, file, or function in the codebase?\n- Something from a previous conversation?\n\nCould you please provide more details about what you'd like to know?",
+  "start_time": "2026-02-09T21:29:13.252288+01:00",
+  "end_time": "2026-02-09T21:29:18.940791+01:00",
+  "events": [],
+  "token_usage": {
+    "input_tokens": 2,
+    "output_tokens": 84,
+    "cache_read": 10225,
+    "cache_write": 1525,
+    "total_tokens": 10311,
+    "cost_usd": 0.01005225
+  }
+}
