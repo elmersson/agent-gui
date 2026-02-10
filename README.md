@@ -173,3 +173,9 @@ See `examples/` directory for Docker and Kubernetes deployment templates.
 - ✅ **Phase 3**: Pipeline execution for multi-stage workflows
 - ✅ **Phase 4**: Remote agent execution with gRPC
 - ✅ **Phase 5+**: Agent pools, distributed execution (planned)
+-  **Phase 6+**: Pane Manager (tmux-like Layout Engine)
+-  **Phase 7+**: Parallel Scheduler
+-  **Phase 8+**: Multi-Stream Routing
+-  **Phase 9+**: Agent ↔ Agent Messaging
+-  **Phase 10+**: Real Parallel TUI Demo
+-  **Phase 11+**: Per-Pane Agent Instances and Conversation Isolation
